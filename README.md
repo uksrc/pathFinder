@@ -11,15 +11,15 @@ A CLI Program to authorise a users access to some srcNet data and return the RSE
 
 ## HOW TO Try this script during development
 
-1. Ensure you have installed `uv` - https://docs.astral.sh/uv/
+1. Ensure you have installed `uv` - <https://docs.astral.sh/uv/>
 
         uv --version
 
-    NB., you can use other dependency managers which use the `pyproject.toml` - e.g. `poetry`.  Hint: `uv` is way faster!
+    NB., you can use other dependency managers which use the `pyproject.toml` - e.g. `poetry`. Hint: `uv` is way faster!
 
 2. Set your Data Management API Access Token:
 
-    1. Navigate to https://gateway.srcnet.skao.int
+    1. Navigate to <https://gateway.srcnet.skao.int>
     2. Click your initials badge in the top-right and select "View Token"
     3. Copy the "Data management access token" string
     4. Set the DATA_MANAGEMENT_ACCESS_TOKEN environment variable in your shell:
@@ -40,5 +40,4 @@ A CLI Program to authorise a users access to some srcNet data and return the RSE
 
 ### Extra use case info
 
-The RSE location will be used to run a `bindfs` command on the parent folder to mount this into the user's `~/.skadata/` directory, setting the user and group to the current user.  The specific file from the parent folder will then be used to `mount --bind` that file to `~/skadata/[FILE_NAME]`.
-
+The RSE location will be used to run a `bindfs` command on the parent folder to mount this into the user's `~/.skadata/` directory, setting the user and group to the current user. The specific file from the parent folder will then be used to `mount --bind` that file to `~/skadata/[FILE_NAME]`.
