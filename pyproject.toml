@@ -1,0 +1,9 @@
+[project]
+name = "path-finder"
+version = "0.1.0"
+description = "CLI Program to authorise a users access to some srcNet data and return the RSE path"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.32.5",
+]
