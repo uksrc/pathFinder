@@ -5,6 +5,7 @@ A CLI Program to authorise a users access to some srcNet data and return the RSE
 ## TODO Development
 
 - [ ] Always check site capabilities to ensure that the data is staged to your local RSE.
+  - [ ] Work out whether we need to check for tier 0.
 - [ ] Tidy up the code around checking the response from the DM API `data/locate` request.
 - [ ] Use this script to perform the data mount.
 - [ ] Investigate whether the data can be specified using the IVO URI.

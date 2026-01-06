@@ -41,7 +41,7 @@ class Site(BaseModel):
 class Node(BaseModel):
     name: NodeName
     description: str = Field(default="")
-    sites: list[Site]
+    sites: list[Site] = Field(default=[])
 
     @property
     def storage_areas(self) -> SiteNameToStorageAreas:
@@ -59,7 +59,7 @@ class Node(BaseModel):
 
 # Define an entity which represents the API response containing a list of nodes
 NodesAPIResponse = TypeAdapter(list[Node])
-
+SitesAPIResponse = TypeAdapter(list[Site])
 
 def get_all_node_storage_areas(nodes: list[Node]) -> StorageAreaIDToNodeAndSite:
     """Fetch all nodes and construct a mapping of storage area IDs to their corresponding node and site names.
