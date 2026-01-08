@@ -343,32 +343,33 @@ if __name__ == "__main__":
     parser.add_argument("--namespace", required=True, help="Namespace of the data")
     parser.add_argument("--file_name", required=True, help="Name of the data file")
     parser.add_argument(
-        "--site_name", required=True, help="Site name where data is needed"
+        "--site_name", required=True, help="Site name where data is staged"
     )
     parser.add_argument(
-        "--login",
+        "--no-login",
         action="store_true",
-        help="Authenticate using OAuth2 device code flow",
+        help="Do not use OAuth2 for authentication - use environment variables instead",
     )
     args = parser.parse_args()
 
-    user = os.getlogin()
-    groups = os.getgroups()
-    sudo_user = os.environ.get("SUDO_USER")
-    if sudo_user:
-        print(f"Running path-finder as sudo user: {sudo_user}")
-    else:
-        print("Not running Python as sudo.")
-    print(f"Running path-finder as local user: {user}")
-    group_names = [grp.getgrgid(gid).gr_name for gid in groups]
-    print(f"User '{user}' belongs to groups: {group_names}")
+    # DEBUG: Print user and group information
+    # user = os.getlogin()
+    # groups = os.getgroups()
+    # sudo_user = os.environ.get("SUDO_USER")
+    # if sudo_user:
+    #     print(f"Running path-finder as sudo user: {sudo_user}")
+    # else:
+    #     print("Not running Python as sudo.")
+    # print(f"Running path-finder as local user: {user}")
+    # group_names = [grp.getgrgid(gid).gr_name for gid in groups]
+    # print(f"User '{user}' belongs to groups: {group_names}")
 
-    # Ensure availability of API access tokens
-    if args.login:
+    if not args.no_login:
         # Use OAuth2 device code flow to authenticate
         try:
             print("Authenticating with OAuth2...")
             tokens = authenticate()
+            print("Authentication successful!")
         except OAuth2AuthenticationError as e:
             print(f"Authentication failed: {e}")
             exit(1)

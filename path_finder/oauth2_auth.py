@@ -49,22 +49,16 @@ def authenticate(use_cache: bool = True) -> dict[str, str]:
             return cached_tokens
 
     # Perform full authentication flow
-    print("\nStarting authentication flow...")
     device_info = initiate_device_code_flow()
     display_user_instructions(device_info)
 
     device_code = device_info["device_code"]
     interval = int(device_info.get("interval", 5))
     auth_token = poll_for_authentication(device_code, interval)
-    print("Authentication successful!")
 
     # Get API-specific tokens
-    print("\nObtaining API tokens...")
     dm_token = exchange_token_for_api_token(auth_token, DATA_MANAGEMENT)
-    print("  ✓ Data Management token obtained")
-
     sc_token = exchange_token_for_api_token(auth_token, SITE_CAPABILITIES)
-    print("  ✓ Site Capabilities token obtained")
 
     tokens = {"data_management_token": dm_token, "site_capabilities_token": sc_token}
 
