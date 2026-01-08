@@ -4,30 +4,23 @@
 #
 
 import argparse
-import grp
 import itertools
 import os
 import re
-import subprocess
 from venv import logger
 
 import requests
 
-from models.data_management import DataLocationAPIResponse, DataLocation
-from oauth2_auth import authenticate, OAuth2AuthenticationError
+from models.data_management import DataLocation, DataLocationAPIResponse
 from models.site_capabilities import (
-    Site,
+    get_all_node_storage_areas,
+    NodesAPIResponse,
     SitesAPIResponse,
     StorageAreaIDToNodeAndSite,
-    NodesAPIResponse,
-    get_all_node_storage_areas,
 )
+from mount_data import mount_unmount
+from oauth2 import authenticate, OAuth2AuthenticationError
 
-
-# Inputs - these can be inputs
-DATA_NAMESPACE = "daac"
-DATA_FILE = "pi24_test_run_1_cleaned.fits"
-SLURM_SITE_NAME = "UKSRC-CAM-PREPROD"
 
 # Upstream services
 DM_API_BASEURL = "https://data-management.srcnet.skao.int/api/v1"
@@ -35,12 +28,12 @@ SC_API_BASEURL = "https://site-capabilities.srcnet.skao.int/api/v1"
 
 
 def main(
-    namespace: str = DATA_NAMESPACE,
-    file_name: str = DATA_FILE,
-    site_name: str = SLURM_SITE_NAME,
-    tokens: dict[str, str] = {},
-    *args,
-    **kwargs,
+    namespace: str,
+    file_name: str,
+    site_name: str,
+    tokens: dict[str, str],
+    *_,
+    **__,
 ) -> None:
     """Main function to locate data and print out storage area information."""
 
@@ -57,13 +50,12 @@ def main(
             f"Data file '{file_name}' in namespace '{namespace}' is not located at site '{site_name}'."
         )
         print("Ensure that the data is staged to the site before proceeding.")
-        # TODO: If the data isn't available at the SLURM_SITE_NAME, perhaps we could stage it
         exit(1)
 
     rse_path = extract_rse_path(data_locations, namespace, file_name)
     print(f"RSE Path for file '{file_name}' in namespace '{namespace}': {rse_path}")
 
-    mount_data(rse_path, namespace)
+    mount_unmount(rse_path, namespace)
 
 
 def check_namespace_available(namespace: str, dm_api_token: str) -> None:
@@ -288,56 +280,6 @@ def extract_rse_path(
     return matched_paths.pop()
 
 
-def mount_data(rse_path: str, namespace: str) -> None:
-    """Mount the data at the specified RSE path using sudo pathfinder.
-
-    Args:
-      rse_path (str): The RSE path to mount.
-      namespace (str): The namespace of the data.
-
-    Raises:
-      RuntimeError: If the mount command fails.
-    """
-    print(f"Mounting data from RSE path: {rse_path} in namespace: {namespace}")
-
-    # Construct the sudo command
-    cmd = ["sudo", "pathfinder", "--mount", rse_path, namespace]
-
-    try:
-        # Execute the command
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,  # Don't raise exception, handle manually
-            timeout=30,  # 30 second timeout
-        )
-
-        # Print stdout if available
-        if result.stdout:
-            print(f"Mount output: {result.stdout.strip()}")
-
-        # Check return code
-        if result.returncode != 0:
-            error_msg = f"Mount command failed with exit code {result.returncode}"
-            if result.stderr:
-                error_msg += f": {result.stderr.strip()}"
-            raise RuntimeError(error_msg)
-
-        print(f"Successfully mounted {rse_path} in namespace {namespace}")
-
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Mount command timed out after 30 seconds")
-    except FileNotFoundError:
-        raise RuntimeError(
-            "pathfinder command not found. Ensure it's installed and in PATH."
-        )
-    except PermissionError:
-        raise RuntimeError("Permission denied. Ensure sudo is configured correctly.")
-    except Exception as e:
-        raise RuntimeError(f"Unexpected error during mount: {str(e)}")
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Path Finder")
     parser.add_argument("--namespace", required=True, help="Namespace of the data")
@@ -396,6 +338,5 @@ if __name__ == "__main__":
             "data_management_token": data_management_access_token,
             "site_capabilities_token": site_capabilities_access_token,
         }
-
 
     main(**vars(args), tokens=tokens)

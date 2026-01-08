@@ -7,8 +7,10 @@ A CLI Program to authorise a users access to some srcNet data and return the RSE
 - [ ] Always check site capabilities to ensure that the data is staged to your local RSE.
   - [ ] Work out whether we need to check for tier 0.
 - [ ] Tidy up the code around checking the response from the DM API `data/locate` request.
-- [ ] Use this script to perform the data mount.
+- [ ] Add unmount functionality.
+- [x] Use this script to perform the data mount.
 - [ ] Investigate whether the data can be specified using the IVO URI.
+  - [ ] Using Astroquery.
 
 ## HOW TO Try this script during development
 
@@ -23,7 +25,7 @@ A CLI Program to authorise a users access to some srcNet data and return the RSE
     1. Navigate to <https://gateway.srcnet.skao.int>
     2. Click your initials badge in the top-right and select "View Token"
     3. Copy the "Data management access token" string
-    4. Set the DATA_MANAGEMENT_ACCESS_TOKEN environment variable in your shell:
+    4. Set the DATA_MANAGEMENT_ACCESS_TOKEN & SITE_CAPA environment variable in your shell:
 
             export DATA_MANAGEMENT_ACCESS_TOKEN=[PASTED STRING]
 
