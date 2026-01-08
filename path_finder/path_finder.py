@@ -14,6 +14,7 @@ from venv import logger
 import requests
 
 from models.data_management import DataLocationAPIResponse, DataLocation
+from oauth2_auth import authenticate, OAuth2AuthenticationError
 from models.site_capabilities import (
     Site,
     SitesAPIResponse,
@@ -37,16 +38,18 @@ def main(
     namespace: str = DATA_NAMESPACE,
     file_name: str = DATA_FILE,
     site_name: str = SLURM_SITE_NAME,
+    tokens: dict[str, str] = {},
+    *args,
+    **kwargs,
 ) -> None:
     """Main function to locate data and print out storage area information."""
 
-    check_namespace_available(namespace)
-    check_site_name_exists(site_name)
+    check_namespace_available(namespace, tokens["data_management_token"])
+    check_site_name_exists(site_name, tokens["site_capabilities_token"])
 
-    site_storages = site_storage_areas()
-    data_locations = locate_data(namespace, file_name)
+    site_storages = site_storage_areas(tokens["site_capabilities_token"])
+    data_locations = locate_data(namespace, file_name, tokens["data_management_token"])
 
-    # FOR DEBUGGING PURPOSES ONLY - PRINT DATA LOCATIONS WITH SITES
     print_data_locations_with_sites(site_storages, data_locations)
 
     if not is_data_located_at_site(site_name, data_locations, site_storages):
@@ -63,7 +66,7 @@ def main(
     mount_data(rse_path, namespace)
 
 
-def check_namespace_available(namespace: str) -> None:
+def check_namespace_available(namespace: str, dm_api_token: str) -> None:
     """Check if the specified namespace is available.
 
     Args:
@@ -72,22 +75,23 @@ def check_namespace_available(namespace: str) -> None:
     Raises:
       RuntimeError: If the namespace is not available.
     """
-    all_namespaces = get_all_namespaces()
+    all_namespaces = get_all_namespaces(dm_api_token)
     if namespace not in all_namespaces:
         raise RuntimeError(
             f"Namespace '{namespace}' not found in available namespaces: {all_namespaces}"
         )
 
 
-def get_all_namespaces() -> list[str]:
+def get_all_namespaces(dm_api_token: str) -> list[str]:
     """Fetch all available namespaces from the Data Management API.
 
     Returns:
       A list of available namespace strings.
     """
-    headers = {"Authorization": f"Bearer {DATA_MANAGEMENT_ACCESS_TOKEN}"}
+    headers = {"Authorization": f"Bearer {dm_api_token}"}
     try:
         response = requests.get(f"{DM_API_BASEURL}/data/list", headers=headers)
+        # TODO: Handle 401 Unauthorized
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Error requesting namespaces from DM API:\n{e}")
@@ -95,7 +99,7 @@ def get_all_namespaces() -> list[str]:
     return namespaces
 
 
-def check_site_name_exists(site_name: str) -> None:
+def check_site_name_exists(site_name: str, sc_api_token: str) -> None:
     """Check if the specified site name exists.
 
     Args:
@@ -104,7 +108,7 @@ def check_site_name_exists(site_name: str) -> None:
     Raises:
       RuntimeError: If the site name does not exist.
     """
-    all_sites = all_site_names()
+    all_sites = all_site_names(sc_api_token)
     if site_name not in all_sites:
         logger.error(
             f"Error: Site name '{site_name}' not found in available sites:\n\n{', '.join(all_sites)}"
@@ -112,13 +116,13 @@ def check_site_name_exists(site_name: str) -> None:
         exit(1)
 
 
-def all_site_names() -> list[str]:
+def all_site_names(sc_api_token: str) -> list[str]:
     """Fetch the complete site capabilities and return all site name strings.
 
     Returns:
       A list of all available site name strings.
     """
-    headers = {"Authorization": f"Bearer {SITE_CAPABILITIES_ACCESS_TOKEN}"}
+    headers = {"Authorization": f"Bearer {sc_api_token}"}
     try:
         response = requests.get(f"{SC_API_BASEURL}/sites", headers=headers)
         response.raise_for_status()
@@ -130,14 +134,14 @@ def all_site_names() -> list[str]:
     return [site.name for site in nodes_response]
 
 
-def site_storage_areas() -> StorageAreaIDToNodeAndSite:
+def site_storage_areas(sc_api_token: str) -> StorageAreaIDToNodeAndSite:
     """Fetch the site capabilities and obtain a storage area mapping of storage area IDs.
 
     Returns:
       StorageAreaIDToNodeAndSite: A mapping of storage area IDs to their corresponding node
         and site names.
     """
-    headers = {"Authorization": f"Bearer {SITE_CAPABILITIES_ACCESS_TOKEN}"}
+    headers = {"Authorization": f"Bearer {sc_api_token}"}
     try:
         response = requests.get(f"{SC_API_BASEURL}/nodes", headers=headers)
         response.raise_for_status()
@@ -152,6 +156,7 @@ def site_storage_areas() -> StorageAreaIDToNodeAndSite:
 def locate_data(
     namespace: str,
     file_name: str,
+    dm_api_token: str,
 ) -> list[DataLocation]:
     """Locate a data file within a specified namespace.
 
@@ -163,7 +168,7 @@ def locate_data(
       A list of DataLocation objects representing the locations of the data file.
     """
 
-    headers = {"Authorization": f"Bearer {DATA_MANAGEMENT_ACCESS_TOKEN}"}
+    headers = {"Authorization": f"Bearer {dm_api_token}"}
 
     # Query the Data Management API to locate the file
     try:
@@ -204,7 +209,9 @@ def print_data_locations_with_sites(
 
 
 def is_data_located_at_site(
-    site_name: str, data_locations: list[DataLocation], site_stores: StorageAreaIDToNodeAndSite
+    site_name: str,
+    data_locations: list[DataLocation],
+    site_stores: StorageAreaIDToNodeAndSite,
 ) -> bool:
     """Check if any data locations are associated with the specified site name.
 
@@ -215,7 +222,10 @@ def is_data_located_at_site(
     Returns:
       True if any data location is associated with the specified site name, False otherwise.
     """
-    sites_with_data = [site_stores.get(location.associated_storage_area_id, (None, None))[1] for location in data_locations]
+    sites_with_data = [
+        site_stores.get(location.associated_storage_area_id, (None, None))[1]
+        for location in data_locations
+    ]
 
     print(f"Sites with data: {sites_with_data}")
     if site_name in sites_with_data:
@@ -300,7 +310,7 @@ def mount_data(rse_path: str, namespace: str) -> None:
             capture_output=True,
             text=True,
             check=False,  # Don't raise exception, handle manually
-            timeout=30  # 30 second timeout
+            timeout=30,  # 30 second timeout
         )
 
         # Print stdout if available
@@ -319,12 +329,13 @@ def mount_data(rse_path: str, namespace: str) -> None:
     except subprocess.TimeoutExpired:
         raise RuntimeError("Mount command timed out after 30 seconds")
     except FileNotFoundError:
-        raise RuntimeError("pathfinder command not found. Ensure it's installed and in PATH.")
+        raise RuntimeError(
+            "pathfinder command not found. Ensure it's installed and in PATH."
+        )
     except PermissionError:
         raise RuntimeError("Permission denied. Ensure sudo is configured correctly.")
     except Exception as e:
         raise RuntimeError(f"Unexpected error during mount: {str(e)}")
-
 
 
 if __name__ == "__main__":
@@ -333,6 +344,11 @@ if __name__ == "__main__":
     parser.add_argument("--file_name", required=True, help="Name of the data file")
     parser.add_argument(
         "--site_name", required=True, help="Site name where data is needed"
+    )
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        help="Authenticate using OAuth2 device code flow",
     )
     args = parser.parse_args()
 
@@ -348,16 +364,37 @@ if __name__ == "__main__":
     print(f"User '{user}' belongs to groups: {group_names}")
 
     # Ensure availability of API access tokens
-    try:
-        DATA_MANAGEMENT_ACCESS_TOKEN = os.environ["DATA_MANAGEMENT_ACCESS_TOKEN"]
-    except KeyError:
-        print("Error: Please set DATA_MANAGEMENT_ACCESS_TOKEN environment variable.")
-        exit(1)
+    if args.login:
+        # Use OAuth2 device code flow to authenticate
+        try:
+            print("Authenticating with OAuth2...")
+            tokens = authenticate()
+        except OAuth2AuthenticationError as e:
+            print(f"Authentication failed: {e}")
+            exit(1)
+    else:
+        # Fall back to environment variables
+        try:
+            data_management_access_token = os.environ["DATA_MANAGEMENT_ACCESS_TOKEN"]
+        except KeyError:
+            print(
+                "Error: Please set DATA_MANAGEMENT_ACCESS_TOKEN environment variable or use --login flag."
+            )
+            exit(1)
 
-    try:
-        SITE_CAPABILITIES_ACCESS_TOKEN = os.environ["SITE_CAPABILITIES_ACCESS_TOKEN"]
-    except KeyError:
-        print("Error: Please set SITE_CAPABILITIES_ACCESS_TOKEN environment variable.")
-        exit(1)
+        try:
+            site_capabilities_access_token = os.environ[
+                "SITE_CAPABILITIES_ACCESS_TOKEN"
+            ]
+        except KeyError:
+            print(
+                "Error: Please set SITE_CAPABILITIES_ACCESS_TOKEN environment variable or use --login flag."
+            )
+            exit(1)
+        tokens = {
+            "data_management_token": data_management_access_token,
+            "site_capabilities_token": site_capabilities_access_token,
+        }
 
-    main(**vars(args))
+
+    main(**vars(args), tokens=tokens)
