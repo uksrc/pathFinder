@@ -26,13 +26,17 @@ struct Args {
     #[arg(long)]
     file_name: String,
 
-    /// Site name where data is staged
-    #[arg(long)]
-    site_name: String,
+    /// Site name where data is staged (not required for unmount)
+    #[arg(long, required_unless_present = "unmount")]
+    site_name: Option<String>,
 
     /// Do not use OAuth2 for authentication - use environment variables instead
     #[arg(long)]
     no_login: bool,
+
+    /// Unmount previously mounted data instead of mounting
+    #[arg(long)]
+    unmount: bool,
 }
 
 fn main() -> Result<()> {
@@ -40,6 +44,18 @@ fn main() -> Result<()> {
 
     check_privileges(&args)?;
 
+    // Handle unmount operation (no API calls needed)
+    if args.unmount {
+        let sudo_user = env::var("SUDO_USER")
+            .context("SUDO_USER not set")?;
+
+        let fits_path = format!("/{}/{}", args.namespace, args.file_name);
+        mount::unmount_operation(&fits_path, &sudo_user)?;
+        println!("Successfully unmounted {} from namespace {}", args.file_name, args.namespace);
+        return Ok(());
+    }
+
+    // Mount operation requires authentication and API calls
     let tokens = if args.no_login {
         get_tokens_from_env()?
     } else {
@@ -52,7 +68,7 @@ fn main() -> Result<()> {
     run(
         &args.namespace,
         &args.file_name,
-        &args.site_name,
+        args.site_name.as_ref().unwrap(),
         &tokens,
     )
 }
@@ -63,10 +79,15 @@ fn check_privileges(args: &Args) -> Result<()> {
     {
         let euid = unsafe { libc::geteuid() };
         if euid != 0 {
-            eprintln!("\nError: This tool requires root privileges for mount operations.");
+            eprintln!("\nError: This tool requires root privileges for mount/unmount operations.");
             eprintln!("Please re-run with sudo:");
-            eprintln!("  sudo -E path-finder --namespace {} --file_name {} --site_name {}",
-                args.namespace, args.file_name, args.site_name);
+            if args.unmount {
+                eprintln!("  sudo -E path-finder --namespace {} --file_name {} --unmount",
+                    args.namespace, args.file_name);
+            } else {
+                eprintln!("  sudo -E path-finder --namespace {} --file_name {} --site_name {}",
+                    args.namespace, args.file_name, args.site_name.as_deref().unwrap_or("<SITE>"));
+            }
             anyhow::bail!("Insufficient privileges - sudo required");
         }
 
@@ -88,10 +109,10 @@ fn check_privileges(args: &Args) -> Result<()> {
 
 fn get_tokens_from_env() -> Result<Tokens> {
     let dm_token = env::var("DATA_MANAGEMENT_ACCESS_TOKEN")
-        .context("Please set DATA_MANAGEMENT_ACCESS_TOKEN environment variable or use --login flag")?;
+        .context("Please set DATA_MANAGEMENT_ACCESS_TOKEN environment variable or omit --no-login to use OAuth2")?;
 
     let sc_token = env::var("SITE_CAPABILITIES_ACCESS_TOKEN")
-        .context("Please set SITE_CAPABILITIES_ACCESS_TOKEN environment variable or use --login flag")?;
+        .context("Please set SITE_CAPABILITIES_ACCESS_TOKEN environment variable or omit --no-login to use OAuth2")?;
 
     Ok(Tokens {
         data_management_token: dm_token,
