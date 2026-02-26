@@ -54,14 +54,6 @@ pub fn mount_operation(data_path: &str, namespace: &str, sudo_user: &str) -> Res
     // TODO: Read the SKA data base path (default: `/skadata`) from config or env variable instead of hardcoding - check it exists at startup
     let skadata_src = PathBuf::from("/skadata").join(data_dir);
 
-    // Output debug information about paths being used
-    println!("Data file: {}", data_file);
-    println!("Bind name: {}", bind_name);
-    println!("SKA data source path: {}", skadata_src.display());
-    println!("Bind directory: {}", bind_dir.display());
-    println!("Projects directory: {}", projects_dir.display());
-    println!("Projects file: {}", projects_file.display());
-
     // TODO: Check if already mounted - if so, check that the file is also mounted to the projects directory; if both true: bail
     if is_mountpoint(&bind_dir)? {
         anyhow::bail!(
@@ -174,12 +166,6 @@ pub fn unmount_operation(data_path: &str, namespace: &str, sudo_user: &str) -> R
     let projects_dir = home.join("projects").join(namespace);
     let projects_file = projects_dir.join(data_file);
 
-    println!("Data file: {}", data_file);
-    println!("Bind name: {}", bind_name);
-    println!("Bind directory: {}", bind_dir.display());
-    println!("Projects directory: {}", projects_dir.display());
-    println!("Projects file: {}", projects_file.display());
-
     // Unmount (ignore errors if not mounted)
     let _ = run_command("umount", &[projects_file.to_str().unwrap()], "Unmount projects file");
     let _ = run_command("umount", &[bind_dir.to_str().unwrap()], "Unmount bind directory");
@@ -211,8 +197,6 @@ fn is_mountpoint(path: &Path) -> Result<bool> {
 }
 
 fn run_command(cmd: &str, args: &[&str], description: &str) -> Result<()> {
-
-    println!("Running command: {} {}", cmd, args.join(" "));
 
     let output = Command::new(cmd)
         .args(args)
