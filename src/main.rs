@@ -51,7 +51,6 @@ fn main() -> Result<()> {
 
         let fits_path = format!("/{}/{}", args.namespace, args.file_name);
         mount::unmount_operation(&fits_path, &args.namespace, &sudo_user)?;
-        println!("Successfully unmounted {} from namespace {}", args.file_name, args.namespace);
         return Ok(());
     }
 
