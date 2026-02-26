@@ -14,7 +14,7 @@ use std::process::Command;
 /// * `data_path` - Full path to the data file on the RSE storage.
 ///   Example: `"/daac/08/06/2022-01-01_12-00-00.fits"`
 ///
-/// * `sudo_group` - The namespace/group for the data
+/// * `namespace` - The namespace/group for the data
 ///   Example: `"daac"`
 ///
 /// * `sudo_user` - The username of the user running the command (from SUDO_USER environment variable).
@@ -29,7 +29,7 @@ use std::process::Command;
 /// ```no_run
 /// mount_operation("/daac/08/06/2022-01-01_12-00-00.fits", "daac", "jsmith")?;
 /// ```
-pub fn mount_operation(data_path: &str, sudo_group: &str, sudo_user: &str) -> Result<()> {
+pub fn mount_operation(data_path: &str, namespace: &str, sudo_user: &str) -> Result<()> {
     let data_path = Path::new(data_path);
     let data_file = data_path.file_name()
         .context("Invalid FITS path")?
@@ -49,7 +49,7 @@ pub fn mount_operation(data_path: &str, sudo_group: &str, sudo_user: &str) -> Re
 
     let home = PathBuf::from("/home").join(sudo_user);
     let bind_dir = home.join(".binds").join(bind_name);
-    let projects_dir = home.join("projects").join(sudo_group);
+    let projects_dir = home.join("projects").join(namespace);
     let projects_file = projects_dir.join(data_file);
     // TODO: Read the SKA data base path (default: `/skadata`) from config or env variable instead of hardcoding - check it exists at startup
     let skadata_src = PathBuf::from("/skadata").join(data_dir);
@@ -157,7 +157,7 @@ pub fn mount_operation(data_path: &str, sudo_group: &str, sudo_user: &str) -> Re
     Ok(())
 }
 
-pub fn unmount_operation(data_path: &str, sudo_user: &str) -> Result<()> {
+pub fn unmount_operation(data_path: &str, namespace: &str, sudo_user: &str) -> Result<()> {
     let data_path = Path::new(data_path);
     let data_file = data_path.file_name()
         .context("Invalid FITS path")?
@@ -171,7 +171,14 @@ pub fn unmount_operation(data_path: &str, sudo_user: &str) -> Result<()> {
 
     let home = PathBuf::from("/home").join(sudo_user);
     let bind_dir = home.join(".binds").join(bind_name);
-    let projects_file = home.join("projects").join(data_file);
+    let projects_dir = home.join("projects").join(namespace);
+    let projects_file = projects_dir.join(data_file);
+
+    println!("Data file: {}", data_file);
+    println!("Bind name: {}", bind_name);
+    println!("Bind directory: {}", bind_dir.display());
+    println!("Projects directory: {}", projects_dir.display());
+    println!("Projects file: {}", projects_file.display());
 
     // Unmount (ignore errors if not mounted)
     let _ = run_command("umount", &[projects_file.to_str().unwrap()], "Unmount projects file");

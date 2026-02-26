@@ -50,7 +50,7 @@ fn main() -> Result<()> {
             .context("SUDO_USER not set")?;
 
         let fits_path = format!("/{}/{}", args.namespace, args.file_name);
-        mount::unmount_operation(&fits_path, &sudo_user)?;
+        mount::unmount_operation(&fits_path, &args.namespace, &sudo_user)?;
         println!("Successfully unmounted {} from namespace {}", args.file_name, args.namespace);
         return Ok(());
     }
