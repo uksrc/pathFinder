@@ -20,6 +20,35 @@ jobs:
       - name: Build for Linux
         run: cargo build --release --target x86_64-unknown-linux-gnu --verbose
 
+      - name: Install Ruby and FPM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev rubygems build-essential rpm
+          sudo gem install --no-document fpm
+
+      - name: Create RPM package
+        run: |
+          mkdir -p package/usr/local/bin
+          cp target/x86_64-unknown-linux-gnu/release/pathFinder package/usr/local/bin/
+          chmod +x package/usr/local/bin/pathFinder
+
+          fpm -s dir -t rpm \
+            -n pathfinder \
+            -v 1.0.0 \
+            --iteration 1 \
+            --description "SKA path finder tool for locating and mounting data from SKA storage systems" \
+            --url "https://github.com/ska-telescope/pathfinder" \
+            --license "BSD-3-Clause" \
+            -C package \
+            usr/local/bin/pathFinder
+
+      - name: Upload RPM package
+        if: ${{ !env.ACT }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pathfinder-rpm
+          path: "*.rpm"
+
       - name: Upload Linux binary
         if: ${{ !env.ACT }}
         uses: actions/upload-artifact@v4
