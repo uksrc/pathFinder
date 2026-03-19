@@ -26,10 +26,6 @@ struct Args {
     #[arg(long)]
     file_name: String,
 
-    /// Site name where data is staged (not required for unmount)
-    #[arg(long, required_unless_present = "unmount")]
-    site_name: Option<String>,
-
     /// Do not use OAuth2 for authentication - use environment variables instead
     #[arg(long)]
     no_login: bool,
@@ -67,7 +63,6 @@ fn main() -> Result<()> {
     run(
         &args.namespace,
         &args.file_name,
-        args.site_name.as_ref().unwrap(),
         &tokens,
     )
 }
@@ -84,8 +79,8 @@ fn check_privileges(args: &Args) -> Result<()> {
                 eprintln!("  sudo -E path-finder --namespace {} --file_name {} --unmount",
                     args.namespace, args.file_name);
             } else {
-                eprintln!("  sudo -E path-finder --namespace {} --file_name {} --site_name {}",
-                    args.namespace, args.file_name, args.site_name.as_deref().unwrap_or("<SITE>"));
+                eprintln!("  sudo -E path-finder --namespace {} --file_name {}",
+                    args.namespace, args.file_name);
             }
             anyhow::bail!("Insufficient privileges - sudo required");
         }
@@ -119,34 +114,33 @@ fn get_tokens_from_env() -> Result<Tokens> {
     })
 }
 
-fn run(namespace: &str, file_name: &str, site_name: &str, tokens: &Tokens) -> Result<()> {
+fn run(namespace: &str, file_name: &str, tokens: &Tokens) -> Result<()> {
     let client = ApiClient::new(
         tokens.data_management_token.clone(),
         tokens.site_capabilities_token.clone(),
     );
 
     client.check_namespace_available(namespace)?;
-    client.check_site_name_exists(site_name)?;
 
     let site_storages = client.site_storage_areas()?;
     let data_locations = client.locate_data(namespace, file_name)?;
 
     print_data_locations_with_sites(&site_storages, &data_locations);
 
-    if !is_data_located_at_site(site_name, &data_locations, &site_storages) {
-        println!(
-            "Data file '{}' in namespace '{}' is not located at site '{}'.",
-            file_name, namespace, site_name
-        );
-        println!("Ensure that the data is staged to the site before proceeding.");
-        exit(1);
-    }
-
     let rse_path = extract_rse_path(&data_locations, namespace, file_name)?;
     println!(
         "RSE Path for file '{}' in namespace '{}': {}",
         file_name, namespace, rse_path
     );
+
+    // Check if the file exists locally
+    if !check_local_file_exists(&rse_path) {
+        println!("\n⚠️  File not found locally! ⚠️");
+        println!("\nThe file is available at the following locations:");
+        print_data_locations_with_sites(&site_storages, &data_locations);
+        println!("\nPlease ensure the data has been staged to this local site before mounting.");
+        exit(1);
+    }
 
     mount_data(&rse_path, namespace)?;
 
@@ -172,28 +166,10 @@ fn print_data_locations_with_sites(
     }
 }
 
-fn is_data_located_at_site(
-    site_name: &str,
-    data_locations: &[DataLocation],
-    site_stores: &StorageAreaIDToNodeAndSite,
-) -> bool {
-    println!("\nData availability summary:");
-    let mut found_at_site = false;
-
-    for location in data_locations {
-        if let Some((node_name, site, area_name)) = site_stores.get(&location.associated_storage_area_id) {
-            println!("  - Storage Area: {} ({}) at Site: {} (Node: {})",
-                area_name, location.associated_storage_area_id, site, node_name);
-            if site == site_name {
-                found_at_site = true;
-            }
-        } else {
-            println!("  - Storage Area: {} at Site: Unknown",
-                location.associated_storage_area_id);
-        }
-    }
-
-    found_at_site
+fn check_local_file_exists(rse_path: &str) -> bool {
+    use std::path::Path;
+    let local_path = format!("/skadata{}", rse_path);
+    Path::new(&local_path).exists()
 }
 
 fn extract_rse_path(

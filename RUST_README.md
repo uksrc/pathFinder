@@ -55,8 +55,7 @@ With OAuth2 authentication (recommended):
 ```bash
 path-finder \
     --namespace daac \
-    --file_name pi24_test_run_1_cleaned.fits \
-    --site_name UKSRC-CAM-PREPROD
+    --file_name pi24_test_run_1_cleaned.fits
 ```
 
 With environment variables (for automation):
@@ -68,9 +67,10 @@ export SITE_CAPABILITIES_ACCESS_TOKEN="your_token_here"
 path-finder \
     --namespace daac \
     --file_name pi24_test_run_1_cleaned.fits \
-    --site_name UKSRC-CAM-PREPROD \
     --no-login
 ```
+
+**Note**: The tool will automatically check if the file exists locally at `/skadata`. If the file is not found locally, it will display the sites where the file is available and prompt you to ensure the data has been staged to your local site before mounting.
 
 ### Mount Utility
 

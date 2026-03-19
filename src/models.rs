@@ -19,7 +19,6 @@ pub struct StorageArea {
     pub storage_type: String,
     #[serde(default)]
     pub relative_path: String,
-    #[serde(default)]
     pub tier: Option<i32>,
 }
 
@@ -28,6 +27,7 @@ pub struct Storage {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub areas: Vec<StorageArea>,
 }
 
@@ -35,7 +35,9 @@ pub struct Storage {
 pub struct Site {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub country: String,
+    #[serde(default)]
     pub storages: Vec<Storage>,
 }
 
@@ -62,7 +64,10 @@ impl Node {
         let mut mapping = HashMap::new();
         for site in &self.sites {
             for area in site.storage_areas() {
-                mapping.insert(area.id.clone(), (self.name.clone(), site.name.clone(), area.name.clone()));
+                mapping.insert(
+                    area.id.clone(),
+                    (self.name.clone(), site.name.clone(), area.name.clone()),
+                );
             }
         }
         mapping
@@ -70,7 +75,6 @@ impl Node {
 }
 
 pub type NodesAPIResponse = Vec<Node>;
-pub type SitesAPIResponse = Vec<Site>;
 pub type StorageAreaIDToNodeAndSite = HashMap<String, (String, String, String)>;
 
 pub fn get_all_node_storage_areas(nodes: &[Node]) -> StorageAreaIDToNodeAndSite {
