@@ -25,4 +25,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pathfinder-linux-x64
-          path: target/x86_64-unknown-linux-gnu/release/pathfinder
+          path: target/x86_64-unknown-linux-gnu/release/pathFinder
