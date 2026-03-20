@@ -58,9 +58,9 @@ jobs:
 
       - name: Create RPM package
         run: |
-          mkdir -p package/usr/local/bin
-          cp target/x86_64-unknown-linux-gnu/release/pathFinder package/usr/local/bin/
-          chmod +x package/usr/local/bin/pathFinder
+          mkdir -p package/usr/bin
+          cp target/x86_64-unknown-linux-gnu/release/pathFinder package/usr/bin/
+          chmod +x package/usr/bin/pathFinder
 
           fpm -s dir -t rpm \
             -n pathfinder \
@@ -70,7 +70,7 @@ jobs:
             --url "https://github.com/ska-telescope/pathfinder" \
             --license "BSD-3-Clause" \
             -C package \
-            usr/local/bin/pathFinder
+            usr/bin/pathFinder
 
       - name: Upload RPM package
         if: ${{ !env.ACT }}
