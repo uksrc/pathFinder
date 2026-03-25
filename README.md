@@ -54,33 +54,43 @@ key = ****************************
 ```
 10.4.200.9:6789,10.4.200.13:6789,10.4.200.13:6789,10.4.200.17:6789,10.4.200.25:6789,10.4.200.26:6789:/volumes/_nogroup/a8af40e8-6412-44da-ad08-3731fdf19258/4945e5c2-aab7-4416-9b75-666f2af512d7 /skadata ceph name=rucio_prod_ro,x-systemd.device-timeout=30,x-systemd.mount-timeout=30,noatime,_netdev,ro,nodev,nosuid 0 2 
 ```
+5. Mount the /skadata mountpoint.
 
-5. Create a mountpoint, this MUST be owned by root with permissions of 550.
+Note that we use bindfs here as well so all files under `/skadata` are presented as `root root` for owner and group and hides the real owner **uid/gid** which would typically be the xrootd, Webdav & Storm user uid/gid.
+```
+mount /skadata
+systemctl daemon-reload
+bindfs -u root -g root /skadata /skadata
+```
+
+6. Create a mountpoint, this MUST be owned by root with permissions of 550.
 ```
 sudo mkdir /skadata
 sudo chmod 550 /skadata
 ```
 
-6. Add a sudoers file to control access to the pathfinder tool. 
+7. Add a sudoers file to control access to the pathfinder tool. 
 ```
 vi /etc/sudoers.d/pathFinder
 ```
-Match the SKAIAM groups you want to give access to.
+Using group `pathfinder` for group access for users you want to give access to.
 ```
-%daac ALL = NOPASSWD: /usr/bin/pathfinder, /usr/bin/pathFinder
-%teal ALL = NOPASSWD: /usr/bin/pathfinder, /usr/bin/pathFinder
-%test ALL = NOPASSWD: /usr/bin/pathfinder, /usr/bin/pathFinder
+%pathfinder ALL = NOPASSWD: /usr/bin/pathfinder, /usr/bin/pathFinder
 ```
 
-7. Add the local groups.
+8. Add the local groups.
 ```
-groupadd teal 
-groupadd daac
-groupadd test
+groupadd pathfinder
 ```
 
-8. Add or update the local users to their corresponding group.
+9. Add or update the local users to their corresponding group.
 ```
-usermod -a -G daac sm2921
+usermod -a -G pathfinder sm2921
 ```
+10. Install the pathFinder package.
+```
+dnf install https://github.com/uksrc/pathFinder/releases/download/v1.0.0/pathfinder-1.0.0-1.x86_64.rpm
+```
+
+
 
