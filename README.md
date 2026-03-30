@@ -1,127 +1,71 @@
-# pathFinder #
+# Path Finder
 
-pathFinder is a tool for mounting SKA data on Slurm clusters without copying the data locally.
+A Rust implementation of the SKA path finder tool for authentication, locating & mounting data from the SKA storage system within a Slurm login host.
 
-It allows the Scientist to specify which files, identified from the Science Gateway, they want to mount while keeping the files secure and owned by them.
-## TODO Development
+## Overview
 
-- [ ] Always check site capabilities to ensure that the data is staged to your local RSE.
-  - [ ] Work out whether we need to check for tier 0.
-- [ ] Tidy up the code around checking the response from the DM API `data/locate` request.
-- [ ] Use this script to perform the data mount.
-- [ ] Investigate whether the data can be specified using the IVO URI.
+This project replaces the Python/Bash-based path finder (see git history) with a portable Rust implementation. It provides a single binary and an RPM installer.
 
-## HOW TO Try this script during development
+## Features
 
-1. Ensure you have installed `uv` - <https://docs.astral.sh/uv/>
+- OAuth2 device code flow authentication
+- Data location lookup via Data Management API
+- Site capabilities verification via Site Capabilities API
+- Secure data mounting with proper permissions
 
-        uv --version
+## Building
 
-    NB., you can use other dependency managers which use the `pyproject.toml` - e.g. `poetry`. Hint: `uv` is way faster!
+The binary and RPM are built and published on a GitHub release.
 
-2. Set your Data Management API Access Token:
+## Installation
 
-    1. Navigate to <https://gateway.srcnet.skao.int>
-    2. Click your initials badge in the top-right and select "View Token"
-    3. Copy the "Data management access token" string
-    4. Set the DATA_MANAGEMENT_ACCESS_TOKEN environment variable in your shell:
+1. Find the latest release in GitHub, and copy the URL of the published RPM.
 
-            export DATA_MANAGEMENT_ACCESS_TOKEN=[PASTED STRING]
+2. On the Slurm login node:
 
-3. Run the script while `uv` takes care of the dependencies for you:
+    sudo dnf install [URL_TO_RELEASE_ARTEFACT]
 
-        uv run path_finder/path_finder.py
+## Usage
 
-## USE CASE
+With OAuth2 authentication (recommended):
 
-Two methods are planned, interactive and a workflow managed by the Science Gateway via prepareData.
-
-This documentation covers the prerequisites to setup on the underlying configuration on a Slurm cluster and the installation of the pathFinder tool.
-
-
-## Pre-requisites ##
-
-The following requirements must be met. 
-
-(Note these are for Rocky 9.x releases and have not been tested on RHEL 10.x or Ubuntu)
-
-    - CRB Enabled 
-    - RHEL EPEL (Extra Packages)
-    - BindFS
-    - Ceph Common
-
-## Server Side Configuration ##
-
-The configuration is only required on the Login node of your Slurm cluster, this assumes that all your user home directories are CephFS/NFS mount points.
-
-If you already have EPEL enabled you can skip the next 2 steps.
-
-1. Enable CRB
-
-```
-crb status
-crb enable
+```bash
+sudo pathFinder \
+    --namespace daac \
+    --file_name pi24_test_run_1_cleaned.fits
 ```
 
-2. Install EPEL
-```
-sudo dnf install epel-release
-sudo dnf repolist
+With environment variables (for automation):
+
+```bash
+export DATA_MANAGEMENT_ACCESS_TOKEN="your_token_here"
+export SITE_CAPABILITIES_ACCESS_TOKEN="your_token_here"
+
+sudo pathFinder \
+    --namespace daac \
+    --file_name pi24_test_run_1_cleaned.fits \
+    --no-login
 ```
 
-3. Configure your Ceph Keyring
+**Note**: The tool will automatically check if the file exists locally at `/skadata`. If the file is not found locally, it will display the sites where the file is available and prompt you to ensure the data has been staged to your local site before mounting.
 
-```
-vi /etc/ceph/ceph.client.rucio_prod_ro.keyring
-```
-Add your Access key.
-```
-[client.rucio_prod_ro]
-key = ****************************
-```
+## Architecture
 
-4. Add an /etc/fstab entry
-```
-10.4.200.9:6789,10.4.200.13:6789,10.4.200.13:6789,10.4.200.17:6789,10.4.200.25:6789,10.4.200.26:6789:/volumes/_nogroup/a8af40e8-6412-44da-ad08-3731fdf19258/4945e5c2-aab7-4416-9b75-666f2af512d7 /skadata ceph name=rucio_prod_ro,x-systemd.device-timeout=30,x-systemd.mount-timeout=30,noatime,_netdev,ro,nodev,nosuid 0 2 
-```
-5. Mount the /skadata mountpoint.
+### Modules
 
-Note that we use bindfs here as well so all files under `/skadata` are presented as `root root` for owner and group and hides the real owner **uid/gid** which would typically be the xrootd, Webdav & Storm user uid/gid.
-```
-mount /skadata
-systemctl daemon-reload
-bindfs -u root -g root /skadata /skadata
-```
+- **main.rs** - Main path finder CLI logic
+- **api_client.rs** - HTTP client for Data Management and Site Capabilities APIs
+- **oauth2_auth.rs** - OAuth2 device code flow implementation with token caching
+- **models.rs** - Data structures for API responses (sites, nodes, storage areas, data locations)
+- **mount.rs** - Mount/unmount utility for data access
 
-6. Create a mountpoint, this MUST be owned by root with permissions of 550.
-```
-sudo mkdir /skadata
-sudo chmod 550 /skadata
-```
+## System Requirements
 
-7. Add a sudoers file to control access to the pathfinder tool. 
-```
-vi /etc/sudoers.d/pathFinder
-```
-Using group `pathfinder` for group access for users you want to give access to.
-```
-%pathfinder ALL = NOPASSWD: /usr/bin/pathfinder, /usr/bin/pathFinder
-```
+- **bindfs** - FUSE filesystem for permission remapping
+- **sudo** - Required for mount operations
+- **mountpoint** - Used to verify mount status
 
-8. Add the local groups.
-```
-groupadd pathfinder
-```
+The system needs to have the local RSE mounted at `/skadata` as a 700 mount owned by root:root.  TODO: Ensure the program checks this and reports correctly if the share is not present.
 
-9. Add or update the local users to their corresponding group.
-```
-usermod -a -G pathfinder sm2921
-```
-10. Install the pathFinder package.
-```
-dnf install https://github.com/uksrc/pathFinder/releases/download/v1.0.0/pathfinder-1.0.0-1.x86_64.rpm
-```
+A sudoers file needs to be added to allow members for the pathfinders group sudo privileges to the executable - TODO: Add this to the RPM.
 
-
-
-The RSE location will be used to run a `bindfs` command on the parent folder to mount this into the user's `~/.skadata/` directory, setting the user and group to the current user. The specific file from the parent folder will then be used to `mount --bind` that file to `~/skadata/[FILE_NAME]`.

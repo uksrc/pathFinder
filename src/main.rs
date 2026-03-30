@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::env;
 use std::process::exit;
 
-use api_client::ApiClient;
+use api_client::{ApiClient, PathFinderApiClient};
 use models::{DataLocation, StorageAreaIDToNodeAndSite};
 use oauth2_auth::{authenticate, Tokens};
 
@@ -42,8 +42,7 @@ fn main() -> Result<()> {
 
     // Handle unmount operation (no API calls needed)
     if args.unmount {
-        let sudo_user = env::var("SUDO_USER")
-            .context("SUDO_USER not set")?;
+        let sudo_user = env::var("SUDO_USER").context("SUDO_USER not set")?;
 
         let fits_path = format!("/{}/{}", args.namespace, args.file_name);
         mount::unmount_operation(&fits_path, &args.namespace, &sudo_user)?;
@@ -60,11 +59,7 @@ fn main() -> Result<()> {
         tokens
     };
 
-    run(
-        &args.namespace,
-        &args.file_name,
-        &tokens,
-    )
+    run(&args.namespace, &args.file_name, &tokens)
 }
 
 fn check_privileges(args: &Args) -> Result<()> {
@@ -76,11 +71,15 @@ fn check_privileges(args: &Args) -> Result<()> {
             eprintln!("\nError: This tool requires root privileges for mount/unmount operations.");
             eprintln!("Please re-run with sudo:");
             if args.unmount {
-                eprintln!("  sudo -E path-finder --namespace {} --file_name {} --unmount",
-                    args.namespace, args.file_name);
+                eprintln!(
+                    "  sudo -E path-finder --namespace {} --file_name {} --unmount",
+                    args.namespace, args.file_name
+                );
             } else {
-                eprintln!("  sudo -E path-finder --namespace {} --file_name {}",
-                    args.namespace, args.file_name);
+                eprintln!(
+                    "  sudo -E path-finder --namespace {} --file_name {}",
+                    args.namespace, args.file_name
+                );
             }
             anyhow::bail!("Insufficient privileges - sudo required");
         }
@@ -152,10 +151,16 @@ fn print_data_locations_with_sites(
     data_locations: &[DataLocation],
 ) {
     for location in data_locations {
-        if let Some((node_name, site_name, area_name)) = site_stores.get(&location.associated_storage_area_id) {
+        if let Some((node_name, site_name, area_name)) =
+            site_stores.get(&location.associated_storage_area_id)
+        {
             println!(
                 "Data location ID: {}, Storage Area: {} ({}), Node: {}, Site: {}",
-                location.identifier, area_name, location.associated_storage_area_id, node_name, site_name
+                location.identifier,
+                area_name,
+                location.associated_storage_area_id,
+                node_name,
+                site_name
             );
         } else {
             println!(
@@ -219,14 +224,19 @@ fn extract_rse_path(
 }
 
 fn mount_data(rse_path: &str, namespace: &str) -> Result<()> {
-    println!("Mounting data from RSE path: {} in namespace: {}", rse_path, namespace);
+    println!(
+        "Mounting data from RSE path: {} in namespace: {}",
+        rse_path, namespace
+    );
 
     // Get the original user (already verified in check_privileges())
-    let sudo_user = env::var("SUDO_USER")
-        .context("SUDO_USER not set")?;
+    let sudo_user = env::var("SUDO_USER").context("SUDO_USER not set")?;
 
     mount::mount_operation(rse_path, namespace, &sudo_user)?;
-    println!("Successfully mounted {} in namespace {}", rse_path, namespace);
+    println!(
+        "Successfully mounted {} in namespace {}",
+        rse_path, namespace
+    );
 
     Ok(())
 }
