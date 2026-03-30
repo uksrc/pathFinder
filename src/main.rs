@@ -1,7 +1,7 @@
 mod api_client;
 mod models;
 mod mount;
-mod oauth2_auth;
+mod oauth2;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -12,7 +12,7 @@ use std::process::exit;
 
 use api_client::{ApiClient, PathFinderApiClient};
 use models::{DataLocation, StorageAreaIDToNodeAndSite};
-use oauth2_auth::{authenticate, Tokens};
+use oauth2::{authenticate, Tokens};
 
 #[derive(Parser, Debug)]
 #[command(name = "path-finder")]
