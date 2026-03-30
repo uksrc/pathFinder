@@ -341,7 +341,8 @@ mod tests {
                 {
                     "identifier": "loc-1",
                     "associated_storage_area_id": "area-abc",
-                    "replicas": ["rucio://rse1/daac/2022/file.fits"]
+                    "replicas": ["rucio://rse1/daac/2022/file.fits"],
+                    "is_dataset": false
                 }
             ]"#,
             );
