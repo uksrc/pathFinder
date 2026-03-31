@@ -8,10 +8,10 @@ use std::collections::HashMap;
 /// Example:
 ///
 /// {
-///   "identifier": "UKSRC-CAM-T0",
+///   "identifier": "MARSSRC-OLYMPUSMONS-T0",
 ///   "associated_storage_area_id": "2a73d212-8793-4011-a687-cad99841c269",
 ///   "replicas": [
-///     "davs://xrootd01.cam.uksrc.org:1094/skadata/daac/08/06/random10MiB.bin"
+///     "davs://xrootd01.olympusmons.marssrc.org:1094/skadata/daac/08/06/random10MiB.bin"
 ///   ],
 ///   "is_dataset": false
 /// }
@@ -37,7 +37,7 @@ pub type DataLocationAPIResponse = Vec<DataLocation>;
 ///   "id": "ce04d165-4d5f-4380-a674-2a9ae4aba75e",
 ///   "type": "rse",
 ///   "relative_path": "/",
-///   "name": "UKSRC_RAL_XRD",
+///   "name": "MARSSRC_VALLESMARINERIS_XRD",
 ///   "tier": 1
 /// }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +64,7 @@ pub struct StorageArea {
 ///   "srm": "xrd",
 ///   "device_type": "hdd",
 ///   "size_in_terabytes": 200,
-///   "name": "UKSRC_RAL_XRD",
+///   "name": "MARSSRC_VALLESMARINERIS_XRD",
 ///   "supported_protocols": [
 ///     {
 ///       "prefix": "https",
@@ -101,7 +101,7 @@ pub struct Storage {
 /// Example:
 /// {
 ///       "id": "12345678-90ab-cdef-1234-567890abcdef",
-///       "name": "UKSRC-RAL",
+///       "name": "MARSSRC-VALLESMARINERIS",
 ///       "description": "Rutherford Appleton Laboratory",
 ///       "country": "GB",
 ///       "latitude": 51.5707,
@@ -142,8 +142,8 @@ impl Site {
 ///
 /// Example:
 /// {
-///   "name": "UKSRC",
-///   "description": "UKSRC Node",
+///   "name": "MARSSRC",
+///   "description": "MARSSRC Node",
 ///   "sites": [
 ///     ...
 ///   ],
@@ -160,7 +160,7 @@ pub struct Node {
     #[serde(default)]
     pub sites: Vec<Site>,
     // ... other fields omitted
- }
+}
 
 impl Node {
     /// Builds a map from storage area ID to a `(node_name, site_name, area_name)` tuple
@@ -200,10 +200,10 @@ pub fn get_all_node_storage_areas(nodes: &[Node]) -> StorageAreaIDToNodeAndSite 
 mod tests {
     use super::*;
 
-    const RAL_AREA_ID: &str = "ce04d165-4d5f-4380-a674-2a9ae4aba75e";
-    const CAM_AREA_ID: &str = "2a73d212-8793-4011-a687-cad99841c269";
-    const RAL_SITE_ID: &str = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
-    const CAM_SITE_ID: &str = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
+    const VALLESMARINERIS_AREA_ID: &str = "ce04d165-4d5f-4380-a674-2a9ae4aba75e";
+    const OLYMPUSMONS_AREA_ID: &str = "2a73d212-8793-4011-a687-cad99841c269";
+    const VALLESMARINERIS_SITE_ID: &str = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+    const OLYMPUSMONS_SITE_ID: &str = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
 
     // --- helpers ---
 
@@ -246,23 +246,33 @@ mod tests {
 
     #[test]
     fn site_storage_areas_empty_storages_returns_empty() {
-        let site = make_site(RAL_SITE_ID, "UKSRC-RAL", vec![]);
+        let site = make_site(VALLESMARINERIS_SITE_ID, "MARSSRC-VALLESMARINERIS", vec![]);
         assert!(site.storage_areas().is_empty());
     }
 
     #[test]
     fn site_storage_areas_flattens_multiple_storages() {
         let site = make_site(
-            RAL_SITE_ID,
-            "UKSRC-RAL",
+            VALLESMARINERIS_SITE_ID,
+            "MARSSRC-VALLESMARINERIS",
             vec![
-                make_storage("st1", "UKSRC_RAL_XRD", vec![make_area(RAL_AREA_ID, "UKSRC_RAL_XRD")]),
+                make_storage(
+                    "st1",
+                    "MARSSRC_VALLESMARINERIS_XRD",
+                    vec![make_area(
+                        VALLESMARINERIS_AREA_ID,
+                        "MARSSRC_VALLESMARINERIS_XRD",
+                    )],
+                ),
                 make_storage(
                     "st2",
-                    "UKSRC_RAL_STORM",
+                    "MARSSRC_VALLESMARINERIS_STORM",
                     vec![
-                        make_area(CAM_AREA_ID, "UKSRC_RAL_STORM"),
-                        make_area("c3d4e5f6-a7b8-9012-cdef-123456789012", "UKSRC_RAL_TAPE"),
+                        make_area(OLYMPUSMONS_AREA_ID, "MARSSRC_VALLESMARINERIS_STORM"),
+                        make_area(
+                            "c3d4e5f6-a7b8-9012-cdef-123456789012",
+                            "MARSSRC_VALLESMARINERIS_TAPE",
+                        ),
                     ],
                 ),
             ],
@@ -270,8 +280,8 @@ mod tests {
         let areas = site.storage_areas();
         assert_eq!(areas.len(), 3);
         let ids: Vec<&str> = areas.iter().map(|a| a.id.as_str()).collect();
-        assert!(ids.contains(&RAL_AREA_ID));
-        assert!(ids.contains(&CAM_AREA_ID));
+        assert!(ids.contains(&VALLESMARINERIS_AREA_ID));
+        assert!(ids.contains(&OLYMPUSMONS_AREA_ID));
         assert!(ids.contains(&"c3d4e5f6-a7b8-9012-cdef-123456789012"));
     }
 
@@ -279,41 +289,73 @@ mod tests {
 
     #[test]
     fn storage_area_id_to_site_name_empty_sites_returns_empty() {
-        let node = make_node("UKSRC", vec![]);
+        let node = make_node("MARSSRC", vec![]);
         assert!(node.storage_area_id_to_site_name().is_empty());
     }
 
     #[test]
     fn storage_area_id_to_site_name_maps_correctly() {
         let node = make_node(
-            "UKSRC",
+            "MARSSRC",
             vec![make_site(
-                RAL_SITE_ID,
-                "UKSRC-RAL",
-                vec![make_storage("st1", "UKSRC_RAL_XRD", vec![make_area(RAL_AREA_ID, "UKSRC_RAL_XRD")])],
+                VALLESMARINERIS_SITE_ID,
+                "MARSSRC-VALLESMARINERIS",
+                vec![make_storage(
+                    "st1",
+                    "MARSSRC_VALLESMARINERIS_XRD",
+                    vec![make_area(
+                        VALLESMARINERIS_AREA_ID,
+                        "MARSSRC_VALLESMARINERIS_XRD",
+                    )],
+                )],
             )],
         );
         let map = node.storage_area_id_to_site_name();
         assert_eq!(map.len(), 1);
-        let (node_name, site_name, area_name) = map.get(RAL_AREA_ID).unwrap();
-        assert_eq!(node_name, "UKSRC");
-        assert_eq!(site_name, "UKSRC-RAL");
-        assert_eq!(area_name, "UKSRC_RAL_XRD");
+        let (node_name, site_name, area_name) = map.get(VALLESMARINERIS_AREA_ID).unwrap();
+        assert_eq!(node_name, "MARSSRC");
+        assert_eq!(site_name, "MARSSRC-VALLESMARINERIS");
+        assert_eq!(area_name, "MARSSRC_VALLESMARINERIS_XRD");
     }
 
     #[test]
     fn storage_area_id_to_site_name_multiple_sites() {
         let node = make_node(
-            "UKSRC",
+            "MARSSRC",
             vec![
-                make_site(RAL_SITE_ID, "UKSRC-RAL", vec![make_storage("st1", "UKSRC_RAL_XRD", vec![make_area(RAL_AREA_ID, "UKSRC_RAL_XRD")])]),
-                make_site(CAM_SITE_ID, "UKSRC-CAM", vec![make_storage("st2", "UKSRC_CAM_XRD", vec![make_area(CAM_AREA_ID, "UKSRC_CAM_XRD")])]),
+                make_site(
+                    VALLESMARINERIS_SITE_ID,
+                    "MARSSRC-VALLESMARINERIS",
+                    vec![make_storage(
+                        "st1",
+                        "MARSSRC_VALLESMARINERIS_XRD",
+                        vec![make_area(
+                            VALLESMARINERIS_AREA_ID,
+                            "MARSSRC_VALLESMARINERIS_XRD",
+                        )],
+                    )],
+                ),
+                make_site(
+                    OLYMPUSMONS_SITE_ID,
+                    "MARSSRC-OLYMPUSMONS",
+                    vec![make_storage(
+                        "st2",
+                        "MARSSRC_OLYMPUSMONS_XRD",
+                        vec![make_area(OLYMPUSMONS_AREA_ID, "MARSSRC_OLYMPUSMONS_XRD")],
+                    )],
+                ),
             ],
         );
         let map = node.storage_area_id_to_site_name();
         assert_eq!(map.len(), 2);
-        assert_eq!(map.get(RAL_AREA_ID).unwrap().1, "UKSRC-RAL");
-        assert_eq!(map.get(CAM_AREA_ID).unwrap().1, "UKSRC-CAM");
+        assert_eq!(
+            map.get(VALLESMARINERIS_AREA_ID).unwrap().1,
+            "MARSSRC-VALLESMARINERIS"
+        );
+        assert_eq!(
+            map.get(OLYMPUSMONS_AREA_ID).unwrap().1,
+            "MARSSRC-OLYMPUSMONS"
+        );
     }
 
     // --- get_all_node_storage_areas ---
@@ -329,17 +371,36 @@ mod tests {
         let aussrc_area_id = "d4e5f6a7-b8c9-0123-defa-234567890123";
         let nodes = vec![
             make_node(
-                "UKSRC",
-                vec![make_site(RAL_SITE_ID, "UKSRC-RAL", vec![make_storage("st1", "UKSRC_RAL_XRD", vec![make_area(RAL_AREA_ID, "UKSRC_RAL_XRD")])])],
+                "MARSSRC",
+                vec![make_site(
+                    VALLESMARINERIS_SITE_ID,
+                    "MARSSRC-VALLESMARINERIS",
+                    vec![make_storage(
+                        "st1",
+                        "MARSSRC_VALLESMARINERIS_XRD",
+                        vec![make_area(
+                            VALLESMARINERIS_AREA_ID,
+                            "MARSSRC_VALLESMARINERIS_XRD",
+                        )],
+                    )],
+                )],
             ),
             make_node(
                 "AUSSRC",
-                vec![make_site("e5f6a7b8-c9d0-1234-efab-345678901234", "AUSSRC-ICRAR", vec![make_storage("st2", "AUSSRC_ICRAR_XRD", vec![make_area(aussrc_area_id, "AUSSRC_ICRAR_XRD")])])],
+                vec![make_site(
+                    "e5f6a7b8-c9d0-1234-efab-345678901234",
+                    "AUSSRC-ICRAR",
+                    vec![make_storage(
+                        "st2",
+                        "AUSSRC_ICRAR_XRD",
+                        vec![make_area(aussrc_area_id, "AUSSRC_ICRAR_XRD")],
+                    )],
+                )],
             ),
         ];
         let map = get_all_node_storage_areas(&nodes);
         assert_eq!(map.len(), 2);
-        assert_eq!(map.get(RAL_AREA_ID).unwrap().0, "UKSRC");
+        assert_eq!(map.get(VALLESMARINERIS_AREA_ID).unwrap().0, "MARSSRC");
         assert_eq!(map.get(aussrc_area_id).unwrap().0, "AUSSRC");
     }
 
@@ -347,17 +408,36 @@ mod tests {
     fn get_all_node_storage_areas_later_node_wins_on_duplicate_id() {
         let nodes = vec![
             make_node(
-                "UKSRC",
-                vec![make_site(RAL_SITE_ID, "UKSRC-RAL", vec![make_storage("st1", "UKSRC_RAL_XRD", vec![make_area(RAL_AREA_ID, "UKSRC_RAL_XRD")])])],
+                "MARSSRC",
+                vec![make_site(
+                    VALLESMARINERIS_SITE_ID,
+                    "MARSSRC-VALLESMARINERIS",
+                    vec![make_storage(
+                        "st1",
+                        "MARSSRC_VALLESMARINERIS_XRD",
+                        vec![make_area(
+                            VALLESMARINERIS_AREA_ID,
+                            "MARSSRC_VALLESMARINERIS_XRD",
+                        )],
+                    )],
+                )],
             ),
             make_node(
                 "AUSSRC",
-                vec![make_site("e5f6a7b8-c9d0-1234-efab-345678901234", "AUSSRC-ICRAR", vec![make_storage("st2", "AUSSRC_ICRAR_XRD", vec![make_area(RAL_AREA_ID, "AUSSRC_ICRAR_XRD")])])],
+                vec![make_site(
+                    "e5f6a7b8-c9d0-1234-efab-345678901234",
+                    "AUSSRC-ICRAR",
+                    vec![make_storage(
+                        "st2",
+                        "AUSSRC_ICRAR_XRD",
+                        vec![make_area(VALLESMARINERIS_AREA_ID, "AUSSRC_ICRAR_XRD")],
+                    )],
+                )],
             ),
         ];
         let map = get_all_node_storage_areas(&nodes);
         assert_eq!(map.len(), 1);
-        assert_eq!(map.get(RAL_AREA_ID).unwrap().0, "AUSSRC");
+        assert_eq!(map.get(VALLESMARINERIS_AREA_ID).unwrap().0, "AUSSRC");
     }
 
     // --- DataLocation deserialisation ---
@@ -365,15 +445,21 @@ mod tests {
     #[test]
     fn data_location_deserialises_from_json() {
         let json = r#"{
-            "identifier": "UKSRC-CAM-T0",
+            "identifier": "MARSSRC-OLYMPUSMONS-T0",
             "associated_storage_area_id": "2a73d212-8793-4011-a687-cad99841c269",
-            "replicas": ["davs://xrootd01.cam.uksrc.org:1094/skadata/daac/08/06/random10MiB.bin"],
+            "replicas": ["davs://xrootd01.olympusmons.marssrc.org:1094/skadata/daac/08/06/random10MiB.bin"],
             "is_dataset": false
         }"#;
         let loc: DataLocation = serde_json::from_str(json).unwrap();
-        assert_eq!(loc.identifier, "UKSRC-CAM-T0");
-        assert_eq!(loc.associated_storage_area_id, "2a73d212-8793-4011-a687-cad99841c269");
-        assert_eq!(loc.replicas[0], "davs://xrootd01.cam.uksrc.org:1094/skadata/daac/08/06/random10MiB.bin");
+        assert_eq!(loc.identifier, "MARSSRC-OLYMPUSMONS-T0");
+        assert_eq!(
+            loc.associated_storage_area_id,
+            "2a73d212-8793-4011-a687-cad99841c269"
+        );
+        assert_eq!(
+            loc.replicas[0],
+            "davs://xrootd01.olympusmons.marssrc.org:1094/skadata/daac/08/06/random10MiB.bin"
+        );
         assert!(!loc.is_dataset);
     }
 
@@ -385,14 +471,14 @@ mod tests {
             "id": "ce04d165-4d5f-4380-a674-2a9ae4aba75e",
             "type": "rse",
             "relative_path": "/",
-            "name": "UKSRC_RAL_XRD",
+            "name": "MARSSRC_VALLESMARINERIS_XRD",
             "tier": 1
         }"#;
         let area: StorageArea = serde_json::from_str(json).unwrap();
         assert_eq!(area.id, "ce04d165-4d5f-4380-a674-2a9ae4aba75e");
         assert_eq!(area.storage_type, "rse");
         assert_eq!(area.relative_path, "/");
-        assert_eq!(area.name, "UKSRC_RAL_XRD");
+        assert_eq!(area.name, "MARSSRC_VALLESMARINERIS_XRD");
         assert_eq!(area.tier, Some(1));
     }
 

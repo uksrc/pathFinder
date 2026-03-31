@@ -63,7 +63,7 @@ fn check_local_file_exists_impl(rse_path: &str, base: &str) -> bool {
 /// Extracts the canonical RSE path from the replica URIs in `data_locations`.
 ///
 /// Each replica URI (e.g.
-/// `"davs://xrootd01.cam.uksrc.org:1094/skadata/ska:ska-sdp/eb-m001/data.fits"`)
+/// `"davs://xrootd01.olympusmons.marssrc.org:1094/skadata/ska:ska-sdp/eb-m001/data.fits"`)
 /// is searched for a `/<namespace>/…` suffix.  The suffix becomes the RSE
 /// path that is later passed to [`mount_data`].
 ///
@@ -134,7 +134,12 @@ pub fn extract_rse_path(
 /// Prints progress messages to stdout before and after the mount syscall.
 pub fn mount_data(rse_path: &str, namespace: &str) -> Result<()> {
     let sudo_user = env::var("SUDO_USER").context("SUDO_USER not set")?;
-    mount_data_impl(rse_path, namespace, &sudo_user, crate::mount::mount_operation)
+    mount_data_impl(
+        rse_path,
+        namespace,
+        &sudo_user,
+        crate::mount::mount_operation,
+    )
 }
 
 /// Inner implementation of [`mount_data`] with an injectable `mount_fn` and
@@ -211,7 +216,7 @@ mod tests {
         let locations = vec![make_location(
             "MARSSRC-OLYMPUSMONS-T0",
             OLYMPUSMONS_AREA_ID,
-            &["davs://xrootd01.example.org:1094/skadata/ska:ns/data.fits"],
+            &["davs://xrootd01.olympusmons.marssrc.org:1094/skadata/ska:ns/data.fits"],
         )];
         // We exercise the enriched branch; the test passes if no panic occurs.
         print_data_locations_with_sites(&stores, &locations);
@@ -235,10 +240,7 @@ mod tests {
         std::fs::create_dir_all(full.parent().unwrap()).unwrap();
         std::fs::write(&full, b"").unwrap();
 
-        assert!(check_local_file_exists_impl(
-            rse_path,
-            base_path
-        ));
+        assert!(check_local_file_exists_impl(rse_path, base_path));
     }
 
     #[test]
@@ -260,7 +262,7 @@ mod tests {
             "MARSSRC-OLYMPUSMONS-T0",
             OLYMPUSMONS_AREA_ID,
             &[&format!(
-                "davs://xrootd01.example.org:1094/skadata/{ns}/data.fits"
+                "davs://xrootd01.olympusmons.marssrc.org:1094/skadata/{ns}/data.fits"
             )],
         )];
 
@@ -271,11 +273,19 @@ mod tests {
     #[test]
     fn extract_rse_path_deduplicates_identical_paths_across_replicas() {
         let ns = "ska:ska-sdp/eb-m001-20240101-00000";
-        let uri = format!("davs://xrootd01.example.org:1094/skadata/{ns}/data.fits");
+        let uri = format!("davs://xrootd01.olympusmons.marssrc.org:1094/skadata/{ns}/data.fits");
         // Same logical path served from two replica URIs → should succeed.
         let locations = vec![
-            make_location("MARSSRC-OLYMPUSMONS-T0", OLYMPUSMONS_AREA_ID, &[uri.as_str()]),
-            make_location("MARSSRC-OLYMPUSMONS-T1", OLYMPUSMONS_AREA_ID, &[uri.as_str()]),
+            make_location(
+                "MARSSRC-OLYMPUSMONS-T0",
+                OLYMPUSMONS_AREA_ID,
+                &[uri.as_str()],
+            ),
+            make_location(
+                "MARSSRC-OLYMPUSMONS-T1",
+                OLYMPUSMONS_AREA_ID,
+                &[uri.as_str()],
+            ),
         ];
 
         let result = extract_rse_path(&locations, ns, "data.fits").unwrap();
@@ -296,7 +306,7 @@ mod tests {
         let locations = vec![make_location(
             "MARSSRC-OLYMPUSMONS-T0",
             OLYMPUSMONS_AREA_ID,
-            &["davs://xrootd01.example.org:1094/unrelated/path/data.fits"],
+            &["davs://xrootd01.olympusmons.marssrc.org:1094/unrelated/path/data.fits"],
         )];
         let err = extract_rse_path(&locations, "ska:ns", "data.fits").unwrap_err();
         assert!(
@@ -313,14 +323,14 @@ mod tests {
                 "MARSSRC-OLYMPUSMONS-T0",
                 OLYMPUSMONS_AREA_ID,
                 &[&format!(
-                    "davs://xrootd01.example.org:1094/skadata/{ns}/v1/data.fits"
+                    "davs://xrootd01.olympusmons.marssrc.org:1094/skadata/{ns}/v1/data.fits"
                 )],
             ),
             make_location(
                 "MARSSRC-OLYMPUSMONS-T1",
                 OLYMPUSMONS_AREA_ID,
                 &[&format!(
-                    "davs://xrootd01.example.org:1094/skadata/{ns}/v2/data.fits"
+                    "davs://xrootd01.olympusmons.marssrc.org:1094/skadata/{ns}/v2/data.fits"
                 )],
             ),
         ];
@@ -341,7 +351,7 @@ mod tests {
             "MARSSRC-OLYMPUSMONS-T0",
             OLYMPUSMONS_AREA_ID,
             &[&format!(
-                "davs://xrootd01.example.org:1094/skadata/{ns}/data.fits"
+                "davs://xrootd01.olympusmons.marssrc.org:1094/skadata/{ns}/data.fits"
             )],
         )];
 
@@ -374,8 +384,8 @@ mod tests {
             anyhow::bail!("bindfs failed");
         };
 
-        let err = mount_data_impl("/ska:ns/data.fits", "ska:ns", "alice", failing_mount)
-            .unwrap_err();
+        let err =
+            mount_data_impl("/ska:ns/data.fits", "ska:ns", "alice", failing_mount).unwrap_err();
         assert!(
             err.to_string().contains("bindfs failed"),
             "unexpected error: {err}"

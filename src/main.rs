@@ -143,7 +143,7 @@ mod tests {
             identifier: "MARSSRC-OLYMPUSMONS-T0".into(),
             associated_storage_area_id: OLYMPUSMONS_AREA_ID.into(),
             replicas: vec![format!(
-                "davs://xrootd01.example.org:1094/skadata{RSE_PATH}"
+                "davs://xrootd01.olympusmons.marssrc.org:1094/skadata{RSE_PATH}"
             )],
             is_dataset: false,
         }
