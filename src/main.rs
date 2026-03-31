@@ -97,12 +97,9 @@ fn run_impl(
 ) -> Result<()> {
     client.check_namespace_available(namespace)?;
 
-    let site_storages = client.site_storage_areas()?;
     let data_locations = client.locate_data(namespace, file_name)?;
-
-    print_locations(&site_storages, &data_locations);
-
     let rse_path = extract_path(&data_locations, namespace, file_name)?;
+
     println!(
         "RSE Path for file '{}' in namespace '{}': {}",
         file_name, namespace, rse_path
@@ -110,11 +107,13 @@ fn run_impl(
 
     if !file_exists(&rse_path) {
         println!("\n⚠️  File not found locally! ⚠️");
+        println!("Checking available storage areas at this site...");
+        let site_storages = client.site_storage_areas()?;
         println!("\nThe file is available at the following locations:");
         print_locations(&site_storages, &data_locations);
         println!("\nPlease ensure the data has been staged to this local site before mounting.");
         exit_fn(1);
-        return Ok(()); // unreachable in production (do_exit never returns)
+        return Ok(()); // unreachable in production (used for testing when exist_fn is mocked)
     }
 
     mount(&rse_path, namespace)?;
@@ -259,34 +258,34 @@ mod tests {
         assert_eq!(
             client.check_namespace_called_with.borrow().as_deref(),
             Some(NS),
-            "check_namespace_available arg"
+            "check_namespace_available should be called with the provided namespace"
         );
         assert!(
-            client.site_storages_called.get(),
-            "site_storage_areas called"
+            !client.site_storages_called.get(),
+            "site_storage_areas function should not be called in golden path"
         );
         assert_eq!(
             *client.locate_data_called_with.borrow(),
             Some((NS.to_string(), FILE.to_string())),
-            "locate_data args"
+            "locate_data should be called with the provided namespace and file"
         );
 
         // path-finder helpers called with the right args
-        assert_eq!(print_count.get(), 1, "print_locations called exactly once");
+        assert_eq!(print_count.get(), 0, "print_locations not called");
         assert_eq!(
             *extract_called_with.borrow(),
             Some((NS.to_string(), FILE.to_string())),
-            "extract_path args"
+            "extract_path should be called with the provided namespace and file"
         );
         assert_eq!(
             file_exists_called_with.borrow().as_deref(),
             Some(RSE_PATH),
-            "file_exists arg"
+            "file_exists should be called with the extracted RSE path"
         );
         assert_eq!(
             *mount_called_with.borrow(),
             Some((RSE_PATH.to_string(), NS.to_string())),
-            "mount args"
+            "mount should be called with the extracted RSE path and namespace"
         );
         assert!(
             !exit_called.get(),
@@ -323,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn run_impl_prints_locations_twice_when_file_not_staged() {
+    fn run_impl_prints_locations_when_file_not_staged() {
         let client = MockApiClient::new_golden();
         let print_count = Cell::new(0u32);
 
@@ -341,8 +340,8 @@ mod tests {
 
         assert_eq!(
             print_count.get(),
-            2,
-            "print_locations should be called twice when file not staged"
+            1,
+            "print_locations should be called when file not staged"
         );
     }
 

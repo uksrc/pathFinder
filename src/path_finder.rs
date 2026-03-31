@@ -157,19 +157,7 @@ fn mount_data_impl(
     sudo_user: &str,
     mount_fn: impl Fn(&str, &str, &str) -> Result<()>,
 ) -> Result<()> {
-    println!(
-        "Mounting data from RSE path: {} in namespace: {}",
-        rse_path, namespace
-    );
-
-    mount_fn(rse_path, namespace, sudo_user)?;
-
-    println!(
-        "Successfully mounted {} in namespace {}",
-        rse_path, namespace
-    );
-
-    Ok(())
+    mount_fn(rse_path, namespace, sudo_user)
 }
 
 #[cfg(test)]
