@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Test coverage and GitHub action to run them
+- GitHub action to create and publish RPM on release
 
 ### Changed
 
@@ -21,3 +22,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial Rust implementation
+
