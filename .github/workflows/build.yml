@@ -3,12 +3,18 @@ name: Build
 on:
   push:
     branches: [main]
+    tags:
+      - "v*"
   pull_request:
     branches: [main]
+  release:
+    types: [created]
 
 jobs:
   build-linux:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -17,8 +23,61 @@ jobs:
         with:
           cache: ${{ !env.ACT }}
 
+      - name: Extract version from Cargo.toml
+        id: cargo_version
+        run: |
+          CARGO_VERSION=$(grep -m1 "^version" Cargo.toml | cut -d '"' -f2)
+          echo "version=$CARGO_VERSION" >> $GITHUB_OUTPUT
+          echo "Cargo.toml version: $CARGO_VERSION"
+
+      - name: Validate tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          CARGO_VERSION=${{ steps.cargo_version.outputs.version }}
+
+          echo "Tag version: v$TAG_VERSION"
+          echo "Cargo.toml version: $CARGO_VERSION"
+
+          if [[ "$TAG_VERSION" != "$CARGO_VERSION" ]]; then
+            echo "❌ Error: Tag version (v$TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
+            echo "Please ensure the git tag matches the version in Cargo.toml"
+            exit 1
+          fi
+
+          echo "✓ Version check passed: Tag and Cargo.toml versions match"
+
       - name: Build for Linux
         run: cargo build --release --target x86_64-unknown-linux-gnu --verbose
+
+      - name: Install Ruby and FPM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev rubygems build-essential rpm
+          sudo gem install --no-document fpm
+
+      - name: Create RPM package
+        run: |
+          mkdir -p package/usr/bin
+          cp target/x86_64-unknown-linux-gnu/release/pathFinder package/usr/bin/
+          chmod +x package/usr/bin/pathFinder
+
+          fpm -s dir -t rpm \
+            -n pathfinder \
+            -v ${{ steps.cargo_version.outputs.version }} \
+            --iteration 1 \
+            --description "SKA path finder tool for locating and mounting data from SKA storage systems" \
+            --url "https://github.com/ska-telescope/pathfinder" \
+            --license "BSD-3-Clause" \
+            -C package \
+            usr/bin/pathFinder
+
+      - name: Upload RPM package
+        if: ${{ !env.ACT }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pathfinder-rpm
+          path: "*.rpm"
 
       - name: Upload Linux binary
         if: ${{ !env.ACT }}
@@ -26,3 +85,14 @@ jobs:
         with:
           name: pathfinder-linux-x64
           path: target/x86_64-unknown-linux-gnu/release/pathFinder
+
+      - name: Upload artifacts to release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            *.rpm
+            target/x86_64-unknown-linux-gnu/release/pathFinder
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
