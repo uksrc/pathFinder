@@ -17,15 +17,14 @@ use std::env;
 
 use crate::oauth2::Tokens;
 
-/// Command-line arguments for pathFinder.
+/// ** pathFinder **
 ///
-/// Parse these with [`clap::Parser::parse`]; the resulting struct is then
-/// passed to [`check_privileges`] before any API work begins.
+/// A CLI tool for mounting SKA data.
 #[derive(Parser, Debug)]
-#[command(name = "path-finder")]
-#[command(about = "A tool for finding SKA data paths for mounting purposes")]
+#[command(name = "pathFinder")]
+#[command(about = "A CLI tool for mounting SKA data.")]
 pub struct Args {
-    /// Namespace of the data (e.g. `"ska:ska-sdp/eb-m001-20240101-00000"`).
+    /// Namespace of the data (e.g. "teal").
     #[arg(long)]
     pub namespace: String,
 
@@ -34,12 +33,12 @@ pub struct Args {
     pub file_name: String,
 
     /// Skip the OAuth2 device-code flow and read tokens from
-    /// `DATA_MANAGEMENT_ACCESS_TOKEN` and `SITE_CAPABILITIES_ACCESS_TOKEN`
+    /// DATA_MANAGEMENT_ACCESS_TOKEN and SITE_CAPABILITIES_ACCESS_TOKEN
     /// instead.
     #[arg(long)]
     pub no_login: bool,
 
-    /// Unmount a previously mounted file instead of mounting it.
+    /// Unmount a file instead of mounting it.
     #[arg(long)]
     pub unmount: bool,
 }
