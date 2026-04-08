@@ -2,70 +2,85 @@
 
 A Rust implementation of the SKA path finder tool for authentication, locating & mounting data from the SKA storage system within a Slurm login host.
 
-## Overview
+## System Requirements
 
-This project replaces the Python/Bash-based path finder (see git history) with a portable Rust implementation. It provides a single binary and an RPM installer.
+For instructions on the setup & requirements for your HPC Server side environment see [pathFinder - Server Configuration](./SERVER-CONFIGURATION.md)
 
-## Features
 
-- OAuth2 device code flow authentication
-- Data location lookup via Data Management API
-- Site capabilities verification via Site Capabilities API
-- Secure data mounting with proper permissions
-
-## Building
-
-The binary and RPM are built and published on a GitHub release.
-
-## Installation
-
-1. Find the latest release in GitHub, and copy the URL of the published RPM.
-
-2. On the Slurm login node:
-
-    sudo dnf install [URL_TO_RELEASE_ARTEFACT]
 
 ## Usage
 
-With OAuth2 authentication (recommended):
+**Note**: The tool will automatically check if the file exists locally at the local RSE `/skadata`. If the file is not found locally, it will display the sites where the file is available and prompt you to ensure the data has been staged to your local site before mounting.
 
-```bash
-sudo pathFinder \
-    --namespace daac \
-    --file_name pi24_test_run_1_cleaned.fits
+### Mount Data
+
+The `pathFinder` command is available to run on the CLI after logging into the Slurm login node.  The command needs to be run as `sudo` because it is mounting data, users in the `pathfinder` group are granted `sudo` privileges to execute the `pathFinder` executable.
+
+#### Usage
+
+```
+$ sudo pathFinder --help
+
+A tool for finding SKA data paths for mounting purposes
+
+Usage: pathFinder [OPTIONS] --namespace <NAMESPACE> --file-name <FILE_NAME>
+
+Options:
+      --namespace <NAMESPACE>  Namespace of the data
+      --file-name <FILE_NAME>  Name of the data file
+      --no-login               Do not use OAuth2 for authentication - use environment variables instead
+      --unmount                Unmount previously mounted data instead of mounting
+  -h, --help                   Print help
 ```
 
-With environment variables (for automation):
+#### OAUTH Authentication
 
-```bash
-export DATA_MANAGEMENT_ACCESS_TOKEN="your_token_here"
-export SITE_CAPABILITIES_ACCESS_TOKEN="your_token_here"
+Example using SKAIAM OAuth2 (required).
 
-sudo pathFinder \
-    --namespace daac \
-    --file_name pi24_test_run_1_cleaned.fits \
-    --no-login
+```
+$ sudo pathFinder --namespace daac --file-name simple_file.txt
+
+Authenticating with OAuth2...
+Cached tokens expired
+
+ACTION REQUIRED:
+    Open this URL in a browser and authenticate: https://ska-iam.stfc.ac.uk/device?user_code=KNIBUH
+
+Waiting for authentication (timeout: 5 minutes)...
+Tokens cached for 3600 seconds
+Authentication successful!
+RSE Path for file 'simple_file.txt' in namespace 'daac': /daac/14/66/simple_file.txt
+Mount verification successful: simple_file.txt is mounted at /home/sm2921/projects/daac/simple_file.txt
 ```
 
-**Note**: The tool will automatically check if the file exists locally at `/skadata`. If the file is not found locally, it will display the sites where the file is available and prompt you to ensure the data has been staged to your local site before mounting.
+#### Token Authentication
 
-## Architecture
+Example with environment variables (for automation):
 
-### Modules
+```
+$ export DATA_MANAGEMENT_ACCESS_TOKEN="your_token_here"
+$ export SITE_CAPABILITIES_ACCESS_TOKEN="your_token_here"
+$ sudo pathFinder --namespace daac --file-name simple_file.txt
+```
 
-- **main.rs** - Main path finder CLI logic
-- **api_client.rs** - HTTP client for Data Management and Site Capabilities APIs
-- **oauth2_auth.rs** - OAuth2 device code flow implementation with token caching
-- **models.rs** - Data structures for API responses (sites, nodes, storage areas, data locations)
-- **mount.rs** - Mount/unmount utility for data access
+#### Unmounting Data
 
-## System Requirements
+Example for unmounting a file.
 
-- **bindfs** - FUSE filesystem for permission remapping
-- **sudo** - Required for mount operations
-- **mountpoint** - Used to verify mount status
+```
+$ sudo pathFinder --namespace daac --file-name simple_file.txt --unmount
+Unmounted simple_file.txt from /home/sm2921/projects/daac/simple_file.txt
+```
 
-The system needs to have the local RSE mounted at `/skadata` as a 700 mount owned by root:root.  TODO: Ensure the program checks this and reports correctly if the share is not present.
+#### RPM Package
 
-A sudoers file needs to be added to allow members for the pathfinders group sudo privileges to the executable - TODO: Add this to the RPM.
+The binary and RPM are built and published at [pathFinder GitHub release](https://github.com/uksrc/pathFinder/releases).
+
+Check your current release with :
+
+```
+dnf info pathFinder
+```
+
+
 
