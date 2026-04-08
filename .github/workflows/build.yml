@@ -18,34 +18,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate CHANGELOG has Unreleased section
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if ! grep -q "^## \[Unreleased\]" CHANGELOG.md; then
+            echo "❌ Error: CHANGELOG.md has no '## [Unreleased]' section"
+            exit 1
+          fi
+          echo "✓ CHANGELOG.md has an Unreleased section"
+
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: ${{ !env.ACT }}
-
-      - name: Extract version from Cargo.toml
-        id: cargo_version
-        run: |
-          CARGO_VERSION=$(grep -m1 "^version" Cargo.toml | cut -d '"' -f2)
-          echo "version=$CARGO_VERSION" >> $GITHUB_OUTPUT
-          echo "Cargo.toml version: $CARGO_VERSION"
-
-      - name: Validate tag matches Cargo.toml version
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+      - name: Update files for release
+        id: update_release
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          CARGO_VERSION=${{ steps.cargo_version.outputs.version }}
+          CARGO_VERSION=$(grep -m1 "^version" Cargo.toml | cut -d '"' -f2)
+          DATE=$(date +%Y-%m-%d)
+          echo "Tag version: ${TAG_VERSION}"
+          echo "Git branch contains: $(git branch --contains v${TAG_VERSION})"
+          BRANCH=$(git branch --contains "v${TAG_VERSION}" | head -1 | sed 's|.*origin/||' | xargs)
+          echo "Pushing release updates to branch: ${BRANCH}"
 
-          echo "Tag version: v$TAG_VERSION"
-          echo "Cargo.toml version: $CARGO_VERSION"
-
-          if [[ "$TAG_VERSION" != "$CARGO_VERSION" ]]; then
-            echo "❌ Error: Tag version (v$TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
-            echo "Please ensure the git tag matches the version in Cargo.toml"
-            exit 1
+          if [[ "$CARGO_VERSION" != "$TAG_VERSION" ]]; then
+            echo "Updating Cargo.toml version from ${CARGO_VERSION} to ${TAG_VERSION}"
+            sed -i "s/^version = \"${CARGO_VERSION}\"/version = \"${TAG_VERSION}\"/" Cargo.toml
+            git add Cargo.toml
           fi
 
-          echo "✓ Version check passed: Tag and Cargo.toml versions match"
+          sed -i "s/## \[Unreleased\]/## v${TAG_VERSION} - ${DATE}/" CHANGELOG.md
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore: update files for v${TAG_VERSION}"
+          git push origin HEAD:refs/heads/${BRANCH}
+          echo "version=${TAG_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Build for Linux
         run: cargo build --release --target x86_64-unknown-linux-gnu --verbose
@@ -64,7 +74,7 @@ jobs:
 
           fpm -s dir -t rpm \
             -n pathfinder \
-            -v ${{ steps.cargo_version.outputs.version }} \
+            -v ${{ steps.update_release.outputs.version }} \
             --iteration 1 \
             --description "SKA path finder tool for locating and mounting data from SKA storage systems" \
             --url "https://github.com/ska-telescope/pathfinder" \
