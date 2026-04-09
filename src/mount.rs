@@ -7,6 +7,33 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use users;
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
+/// Returns `true` if `path` is already owned by `username` (uid and gid both match).
+///
+/// Falls back to `false` if the user cannot be resolved in the password database or
+/// there was any error in obtaining or comparing file to user information.
+fn dir_already_owned_by(path: &Path, username: &str) -> bool {
+    #[cfg(unix)]
+    {
+
+        let (uid, gid) = match users::get_user_by_name(username) {
+            Some(user) => (user.uid(), user.primary_group_id()),
+            None => return false, // If we can't resolve the user, we can't confirm ownership, so assume it's not owned by them.
+        };
+
+        fs::metadata(path)
+            .map(|m| m.uid() == uid && m.gid() == gid)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
 
 /// Abstraction over system commands, allowing real system calls in production and mock system calls during testing.
 trait Runner {
@@ -148,32 +175,52 @@ fn mount_operation_impl(
     // Set ownership and permissions
     let user_group = format!("{}:{}", sudo_user, sudo_user);
 
-    runner.run_command(
-        "chown",
-        &["-R", &user_group, home.join(".binds").to_str().unwrap()],
-        "Set ownership of .binds directory",
-    )?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&bind_dir)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&bind_dir, perms)?;
+    // Set ownership of .binds/<bind_name> directory.
+    // We do NOT use recursive chown, as this would
+    // fail if the directory happens to contain read-only bindfs content from a prior run.
+    // Skip entirely when the directory is already correctly owned (e.g. a second invocation for a
+    // different file that shares the same .binds/<bind_name> but has already been set up).
+    if !dir_already_owned_by(&bind_dir, sudo_user) {
+        runner.run_command(
+            "chown",
+            &[&user_group, bind_dir.to_str().unwrap()],
+            "Set ownership of .binds directory",
+        )?;
     }
 
-    runner.run_command(
-        "chown",
-        &["-R", &user_group, projects_dir.to_str().unwrap()],
-        "Set ownership of projects directory",
-    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::metadata(&bind_dir)?.permissions();
+        if perms.mode() & 0o777 != 0o600 {
+            let mut new_perms = perms;
+            new_perms.set_mode(0o600);
+            fs::set_permissions(&bind_dir, new_perms)?;
+        }
+    }
+
+    // Set ownership of projects/<namespace> directory.
+    // We do NOT use recursive chown, as this would
+    // fail if the directory happens to contain read-only bindfs content from a prior run.
+    // Skip entirely when the directory is already correctly owned (e.g. a second invocation for a
+    // different file that shares the same .binds/<bind_name> but has already been set up).
+    if !dir_already_owned_by(&projects_dir, sudo_user) {
+        runner.run_command(
+            "chown",
+            &[&user_group, projects_dir.to_str().unwrap()],
+            "Set ownership of projects directory",
+        )?;
+    }
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&projects_file)?.permissions();
-        perms.set_mode(0o500);
-        fs::set_permissions(&projects_file, perms)?;
+        let perms = fs::metadata(&projects_file)?.permissions();
+        if perms.mode() & 0o777 != 0o500 {
+            let mut new_perms = perms;
+            new_perms.set_mode(0o500);
+            fs::set_permissions(&projects_file, new_perms)?;
+        }
     }
 
     // Run bindfs
@@ -469,7 +516,63 @@ mod tests {
         );
     }
 
-    // --- unmount: path edge cases ---
+    // --- mount: chown safety ---
+
+
+    /// Regression test: mounting a second file in the same namespace must succeed even when
+    /// the `projects/<namespace>` directory already exists and contains a read-only placeholder
+    /// file left over from the first mount.
+    #[test]
+    fn mount_second_file_in_same_namespace_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let skadata = tmp.path().join("skadata");
+        let home = tmp.path().join("home");
+
+        // Seed two different files under the same skadata directory / namespace.
+        let data_dir = skadata.join("daac/08/06");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(data_dir.join("random10MiB.bin"), b"").unwrap();
+        fs::write(data_dir.join("other100MiB.bin"), b"").unwrap();
+
+        // First mount succeeds.
+        mount_operation_impl(
+            "/daac/08/06/random10MiB.bin",
+            NAMESPACE,
+            USER,
+            &skadata,
+            &home,
+            &MockRunner::new(),
+        )
+        .unwrap();
+
+        // Simulate the projects_dir placeholder from the first mount being read-only
+        // (as it would be after a real `mount --bind`).
+        let first_projects_file = home
+            .join(USER)
+            .join("projects")
+            .join(NAMESPACE)
+            .join("random10MiB.bin");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&first_projects_file).unwrap().permissions();
+            perms.set_mode(0o000); // no permissions — simulates a read-only bind mount
+            fs::set_permissions(&first_projects_file, perms).unwrap();
+        }
+
+        // Second mount with a different file in the same namespace must not error.
+        mount_operation_impl(
+            "/daac/08/06/other100MiB.bin",
+            NAMESPACE,
+            USER,
+            &skadata,
+            &home,
+            &MockRunner::new(),
+        )
+        .unwrap();
+    }
+
+
 
     #[test]
     fn unmount_errors_on_path_with_no_filename() {
