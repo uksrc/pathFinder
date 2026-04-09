@@ -1,6 +1,6 @@
 [package]
 name = "pathFinder"
-version = "1.0.1"
+version = "1.0.2-alpha.0"
 edition = "2021"
 
 [[bin]]
