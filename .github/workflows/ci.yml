@@ -23,3 +23,31 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+  integration-test:
+    runs-on: ubuntu-latest
+    # rust:latest runs as root by default, which is required for chown to
+    # reassign ownership to the test user created during the integration tests.
+    container:
+      image: rust:latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends passwd
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run integration tests
+        run: cargo test -- --include-ignored

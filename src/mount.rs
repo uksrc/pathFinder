@@ -664,4 +664,189 @@ mod tests {
             "other file in same dir should be untouched"
         );
     }
+
+    // --- integration tests (require root on Linux) ---
+    //
+    // These tests create a real system user to exercise actual `chown` behaviour —
+    // verifying ownership changes on disk rather than just the shape of command arguments.
+    //
+    // They are marked `#[ignore]` and are skipped at runtime when not running as root.
+    //
+    // Run locally:
+    //   docker build -f Dockerfile.test -t pf-test . && docker run --rm pf-test
+    //
+    // Run in CI: the `integration-test` job in .github/workflows/ci.yml runs them automatically.
+
+    use std::sync::Mutex;
+
+    /// Serialises integration tests that share the `pf_testuser` system user,
+    /// preventing conflicts when the test harness runs tests in parallel.
+    static INTEGRATION_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// RAII guard: creates the `pf_testuser` system user on construction and
+    /// removes it via `userdel` on drop, even if the test panics.
+    struct TestUser;
+
+    impl TestUser {
+        const NAME: &'static str = "pf_testuser";
+
+        /// Creates the test user, panicking if it already exists (leftover from a prior run).
+        fn create() -> Self {
+            if users::get_user_by_name(Self::NAME).is_some() {
+                panic!(
+                    "test user '{}' already exists on this system — \
+                     remove it first with: userdel {}",
+                    Self::NAME,
+                    Self::NAME,
+                );
+            }
+            let status = Command::new("useradd")
+                .args(["--no-create-home", "--system", Self::NAME])
+                .status()
+                .expect("failed to execute useradd — is it installed?");
+            assert!(status.success(), "useradd failed with exit status: {status}");
+            Self
+        }
+    }
+
+    impl Drop for TestUser {
+        fn drop(&mut self) {
+            let _ = Command::new("userdel").arg(Self::NAME).status();
+        }
+    }
+
+    /// Runner that executes `chown` for real (so ownership changes are visible on disk)
+    /// but mocks `bindfs` and `mount` to avoid needing those tools or mount privileges.
+    ///
+    /// All `run_command` calls are recorded so tests can inspect what was (or was not) invoked.
+    struct CapturingRealChownRunner {
+        commands: std::cell::RefCell<Vec<(String, Vec<String>)>>,
+        mountpoint_calls: Cell<usize>,
+    }
+
+    impl CapturingRealChownRunner {
+        fn new() -> Self {
+            Self {
+                commands: std::cell::RefCell::new(vec![]),
+                mountpoint_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl Runner for CapturingRealChownRunner {
+        fn run_command(&self, cmd: &str, args: &[&str], description: &str) -> Result<()> {
+            self.commands
+                .borrow_mut()
+                .push((cmd.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            if cmd == "chown" {
+                run_command(cmd, args, description)
+            } else {
+                Ok(()) // mock bindfs and mount — no elevated mount privileges needed
+            }
+        }
+        fn is_mountpoint(&self, _path: &Path) -> Result<bool> {
+            let n = self.mountpoint_calls.get();
+            self.mountpoint_calls.set(n + 1);
+            Ok(n > 0)
+        }
+    }
+
+    /// Verifies that after a first mount the bind and projects directories are actually
+    /// owned by the target user on disk (uid and gid match), not just that a `chown`
+    /// command was issued with the right arguments.
+    #[test]
+    #[ignore = "requires root on Linux; run via `docker run --rm pf-test` or the CI integration-test job"]
+    fn integration_chown_sets_correct_ownership_on_first_mount() {
+        if unsafe { libc::getuid() } != 0 {
+            eprintln!("skipped: not running as root");
+            return;
+        }
+
+        let _guard = INTEGRATION_MUTEX.lock().unwrap();
+        let _user = TestUser::create();
+
+        let tmp = TempDir::new().unwrap();
+        let skadata = tmp.path().join("skadata");
+        seed_skadata(&skadata);
+        let home = tmp.path().join("home");
+
+        mount_operation_impl(
+            DATA_PATH,
+            NAMESPACE,
+            TestUser::NAME,
+            &skadata,
+            &home,
+            &CapturingRealChownRunner::new(),
+        )
+        .unwrap();
+
+        let bind_dir = home.join(TestUser::NAME).join(".binds").join("random10MiB");
+        let projects_dir = home.join(TestUser::NAME).join("projects").join(NAMESPACE);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let user = users::get_user_by_name(TestUser::NAME).unwrap();
+            let bind_meta = fs::metadata(&bind_dir).unwrap();
+            let proj_meta = fs::metadata(&projects_dir).unwrap();
+            assert_eq!(bind_meta.uid(), user.uid(), "bind_dir uid mismatch");
+            assert_eq!(bind_meta.gid(), user.primary_group_id(), "bind_dir gid mismatch");
+            assert_eq!(proj_meta.uid(), user.uid(), "projects_dir uid mismatch");
+            assert_eq!(proj_meta.gid(), user.primary_group_id(), "projects_dir gid mismatch");
+        }
+    }
+
+    /// Verifies that mounting a second file in the same namespace does NOT call `chown`
+    /// again, because `dir_already_owned_by` detects correct ownership from the real inode
+    /// and the skip logic fires — validated against actual disk state, not command arguments.
+    #[test]
+    #[ignore = "requires root on Linux; run via `docker run --rm pf-test` or the CI integration-test job"]
+    fn integration_chown_skipped_on_second_mount_when_already_owned() {
+        if unsafe { libc::getuid() } != 0 {
+            eprintln!("skipped: not running as root");
+            return;
+        }
+
+        let _guard = INTEGRATION_MUTEX.lock().unwrap();
+        let _user = TestUser::create();
+
+        let tmp = TempDir::new().unwrap();
+        let skadata = tmp.path().join("skadata");
+        let data_dir = skadata.join("daac/08/06");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(data_dir.join("random10MiB.bin"), b"").unwrap();
+        fs::write(data_dir.join("other100MiB.bin"), b"").unwrap();
+        let home = tmp.path().join("home");
+
+        // First mount: runs real chown, setting ownership on disk.
+        mount_operation_impl(
+            "/daac/08/06/random10MiB.bin",
+            NAMESPACE,
+            TestUser::NAME,
+            &skadata,
+            &home,
+            &CapturingRealChownRunner::new(),
+        )
+        .unwrap();
+
+        // Second mount: directories are already correctly owned; chown should not be called.
+        let runner2 = CapturingRealChownRunner::new();
+        mount_operation_impl(
+            "/daac/08/06/other100MiB.bin",
+            NAMESPACE,
+            TestUser::NAME,
+            &skadata,
+            &home,
+            &runner2,
+        )
+        .unwrap();
+
+        let cmds = runner2.commands.borrow();
+        let chown_calls: Vec<_> = cmds.iter().filter(|(cmd, _)| cmd == "chown").collect();
+        assert!(
+            chown_calls.is_empty(),
+            "chown should not be called on second mount when dirs are already correctly owned; \
+             got: {chown_calls:?}"
+        );
+    }
 }

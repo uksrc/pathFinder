@@ -1,0 +1,28 @@
+# Integration test image.
+#
+# Runs as root (the default for this base image), which is required for `chown`
+# to reassign ownership to the test user created during the tests.
+#
+# Build and run:
+#   docker build -f Dockerfile.test -t pf-test .
+#   docker run --rm pf-test
+FROM rust:latest
+
+# passwd provides useradd/userdel, needed by integration tests to create/remove
+# the pf_testuser system account. Included by default in most distros but made
+# explicit here for reproducibility.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends passwd \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Fetch dependencies before copying source so this layer is cached independently.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+    && cargo fetch \
+    && rm -rf src
+
+COPY . .
+
+CMD ["cargo", "test", "--", "--include-ignored"]
