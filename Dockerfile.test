@@ -23,6 +23,6 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs \
     && cargo fetch \
     && rm -rf src
 
-COPY . .
+COPY src src
 
 CMD ["cargo", "test", "--", "--include-ignored"]
