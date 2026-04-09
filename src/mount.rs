@@ -19,7 +19,6 @@ use std::os::unix::fs::MetadataExt;
 fn dir_already_owned_by(path: &Path, username: &str) -> bool {
     #[cfg(unix)]
     {
-
         let (uid, gid) = match users::get_user_by_name(username) {
             Some(user) => (user.uid(), user.primary_group_id()),
             None => return false, // If we can't resolve the user, we can't confirm ownership, so assume it's not owned by them.
@@ -211,6 +210,13 @@ fn mount_operation_impl(
             "Set ownership of projects directory",
         )?;
     }
+
+    // Set ownership of the placeholder file inside projects/<namespace>/ to ensure it's accessible to the target user.
+    runner.run_command(
+        "chown",
+        &[&user_group, projects_file.to_str().unwrap()],
+        "Set ownership of projects placeholder file",
+    )?;
 
     #[cfg(unix)]
     {
@@ -518,7 +524,6 @@ mod tests {
 
     // --- mount: chown safety ---
 
-
     /// Regression test: mounting a second file in the same namespace must succeed even when
     /// the `projects/<namespace>` directory already exists and contains a read-only placeholder
     /// file left over from the first mount.
@@ -571,8 +576,6 @@ mod tests {
         )
         .unwrap();
     }
-
-
 
     #[test]
     fn unmount_errors_on_path_with_no_filename() {
@@ -704,7 +707,10 @@ mod tests {
                 .args(["--no-create-home", "--system", Self::NAME])
                 .status()
                 .expect("failed to execute useradd — is it installed?");
-            assert!(status.success(), "useradd failed with exit status: {status}");
+            assert!(
+                status.success(),
+                "useradd failed with exit status: {status}"
+            );
             Self
         }
     }
@@ -735,9 +741,10 @@ mod tests {
 
     impl Runner for CapturingRealChownRunner {
         fn run_command(&self, cmd: &str, args: &[&str], description: &str) -> Result<()> {
-            self.commands
-                .borrow_mut()
-                .push((cmd.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            self.commands.borrow_mut().push((
+                cmd.to_string(),
+                args.iter().map(|s| s.to_string()).collect(),
+            ));
             if cmd == "chown" {
                 run_command(cmd, args, description)
             } else {
@@ -790,18 +797,28 @@ mod tests {
             let bind_meta = fs::metadata(&bind_dir).unwrap();
             let proj_meta = fs::metadata(&projects_dir).unwrap();
             assert_eq!(bind_meta.uid(), user.uid(), "bind_dir uid mismatch");
-            assert_eq!(bind_meta.gid(), user.primary_group_id(), "bind_dir gid mismatch");
+            assert_eq!(
+                bind_meta.gid(),
+                user.primary_group_id(),
+                "bind_dir gid mismatch"
+            );
             assert_eq!(proj_meta.uid(), user.uid(), "projects_dir uid mismatch");
-            assert_eq!(proj_meta.gid(), user.primary_group_id(), "projects_dir gid mismatch");
+            assert_eq!(
+                proj_meta.gid(),
+                user.primary_group_id(),
+                "projects_dir gid mismatch"
+            );
         }
     }
 
-    /// Verifies that mounting a second file in the same namespace does NOT call `chown`
-    /// again, because `dir_already_owned_by` detects correct ownership from the real inode
-    /// and the skip logic fires — validated against actual disk state, not command arguments.
+    /// Verifies that the placeholder file created inside `projects/<namespace>/` is owned
+    /// by the target user, not by root.
+    ///
+    /// The file is created by the process running as root (via `fs::OpenOptions`), so
+    /// without an explicit `chown` it would be root:root — inaccessible to the target user.
     #[test]
     #[ignore = "requires root on Linux; run via `docker run --rm pf-test` or the CI integration-test job"]
-    fn integration_chown_skipped_on_second_mount_when_already_owned() {
+    fn integration_projects_placeholder_file_is_owned_by_target_user() {
         if unsafe { libc::getuid() } != 0 {
             eprintln!("skipped: not running as root");
             return;
@@ -812,15 +829,11 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata");
-        let data_dir = skadata.join("daac/08/06");
-        fs::create_dir_all(&data_dir).unwrap();
-        fs::write(data_dir.join("random10MiB.bin"), b"").unwrap();
-        fs::write(data_dir.join("other100MiB.bin"), b"").unwrap();
+        seed_skadata(&skadata);
         let home = tmp.path().join("home");
 
-        // First mount: runs real chown, setting ownership on disk.
         mount_operation_impl(
-            "/daac/08/06/random10MiB.bin",
+            DATA_PATH,
             NAMESPACE,
             TestUser::NAME,
             &skadata,
@@ -829,24 +842,31 @@ mod tests {
         )
         .unwrap();
 
-        // Second mount: directories are already correctly owned; chown should not be called.
-        let runner2 = CapturingRealChownRunner::new();
-        mount_operation_impl(
-            "/daac/08/06/other100MiB.bin",
-            NAMESPACE,
-            TestUser::NAME,
-            &skadata,
-            &home,
-            &runner2,
-        )
-        .unwrap();
+        let projects_file = home
+            .join(TestUser::NAME)
+            .join("projects")
+            .join(NAMESPACE)
+            .join("random10MiB.bin");
 
-        let cmds = runner2.commands.borrow();
-        let chown_calls: Vec<_> = cmds.iter().filter(|(cmd, _)| cmd == "chown").collect();
-        assert!(
-            chown_calls.is_empty(),
-            "chown should not be called on second mount when dirs are already correctly owned; \
-             got: {chown_calls:?}"
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let user = users::get_user_by_name(TestUser::NAME).unwrap();
+            let file_meta = fs::metadata(&projects_file).unwrap();
+            assert_eq!(
+                file_meta.uid(),
+                user.uid(),
+                "projects placeholder file uid should be {}, got {}",
+                user.uid(),
+                file_meta.uid()
+            );
+            assert_eq!(
+                file_meta.gid(),
+                user.primary_group_id(),
+                "projects placeholder file gid should be {}, got {}",
+                user.primary_group_id(),
+                file_meta.gid()
+            );
+        }
     }
 }
