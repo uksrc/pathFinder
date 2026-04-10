@@ -1,6 +1,6 @@
 # Path Finder
 
-**pathFinder** is a tool for mounting SKA data on Slurm clusters without copying the data locally. Currently, it is provided as a single binary or an RPM installer. It is important to prepare the Slurm cluster ahead of its use (see [Installation](#installation)).
+**pathFinder** is a tool for mounting SKA data on Slurm clusters without copying the data locally. Currently, it is provided as a single binary or an RPM installer.
 
 The tool allows the Scientist to specify which files, identified from the Science Gateway, they want to mount while keeping the files secure and owned by them. Two methods are planned: interactive and a workflow managed by the Science Gateway via prepareData.
 
@@ -13,7 +13,7 @@ Features:
 
 ## Installation
 
-For instructions on the setup & requirements for your HPC Server environment, see the [server configuration](./SERVER-CONFIGURATION.md) doc.
+For instructions on the requirements and setup for your HPC server environment, and installation of **pathFinder** itself, see the [SERVER-CONFIGURATION.md](./SERVER-CONFIGURATION.md) doc.
 
 ## Usage
 
@@ -69,4 +69,4 @@ Example for unmounting a file:
 
 ## Development
 
-Notes on development can be found in the [development](DEVELOPMENT.md) doc.
+Notes on development can be found in the [DEVELOPMENT.md](DEVELOPMENT.md) doc.
