@@ -77,14 +77,10 @@ If you already have EPEL enabled you can skip the next 2 steps.
 
        usermod -a -G pathfinder sm2921
 
-## Package installation
+## RPM Package installation
 
-The latest version is published at [pathFinder Release](https://github.com/uksrc/pathFinder/releases) check before installing or upgrading.
+An RPM installation package is published on the [pathFinder release](https://github.com/uksrc/pathFinder/releases) page, check for the latest version before installing or upgrading.
 
 Set the version and install the pathFinder package:
 
-    VERSION=1.x.x dnf upgrade https://github.com/uksrc/pathFinder/releases/download/v1.0.0/pathfinder-${VERSION}-1.x86_64.rpm
-
-## RPM package
-
-The RPM package for pathFinder is published as a part of the [GitHub releases](https://github.com/uksrc/pathFinder/releases).
+    VERSION=1.x.y dnf upgrade https://github.com/uksrc/pathFinder/releases/download/v${VERSION}/pathfinder-${VERSION}-1.x86_64.rpm
