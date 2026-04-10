@@ -69,4 +69,5 @@ Example for unmounting a file:
 
 ## Development
 
-Notes on development can be found in the [DEVELOPMENT.md](DEVELOPMENT.md) doc.
+Notes on how to build the executable, run the unit and integration tests, and local Docker-based testing can be found in the development can be found in the [DEVELOPMENT.md](DEVELOPMENT.md) doc.
+

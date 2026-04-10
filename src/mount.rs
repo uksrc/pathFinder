@@ -7,6 +7,32 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use users;
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
+/// Returns `true` if `path` is already owned by `username` (uid and gid both match).
+///
+/// Falls back to `false` if the user cannot be resolved in the password database or
+/// there was any error in obtaining or comparing file to user information.
+fn dir_already_owned_by(path: &Path, username: &str) -> bool {
+    #[cfg(unix)]
+    {
+        let (uid, gid) = match users::get_user_by_name(username) {
+            Some(user) => (user.uid(), user.primary_group_id()),
+            None => return false, // If we can't resolve the user, we can't confirm ownership, so assume it's not owned by them.
+        };
+
+        fs::metadata(path)
+            .map(|m| m.uid() == uid && m.gid() == gid)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
 
 /// Abstraction over system commands, allowing real system calls in production and mock system calls during testing.
 trait Runner {
@@ -148,32 +174,59 @@ fn mount_operation_impl(
     // Set ownership and permissions
     let user_group = format!("{}:{}", sudo_user, sudo_user);
 
-    runner.run_command(
-        "chown",
-        &["-R", &user_group, home.join(".binds").to_str().unwrap()],
-        "Set ownership of .binds directory",
-    )?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&bind_dir)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&bind_dir, perms)?;
+    // Set ownership of .binds/<bind_name> directory.
+    // We do NOT use recursive chown, as this would
+    // fail if the directory happens to contain read-only bindfs content from a prior run.
+    // Skip entirely when the directory is already correctly owned (e.g. a second invocation for a
+    // different file that shares the same .binds/<bind_name> but has already been set up).
+    if !dir_already_owned_by(&bind_dir, sudo_user) {
+        runner.run_command(
+            "chown",
+            &[&user_group, bind_dir.to_str().unwrap()],
+            "Set ownership of .binds directory",
+        )?;
     }
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::metadata(&bind_dir)?.permissions();
+        if perms.mode() & 0o777 != 0o600 {
+            let mut new_perms = perms;
+            new_perms.set_mode(0o600);
+            fs::set_permissions(&bind_dir, new_perms)?;
+        }
+    }
+
+    // Set ownership of projects/<namespace> directory.
+    // We do NOT use recursive chown, as this would
+    // fail if the directory happens to contain read-only bindfs content from a prior run.
+    // Skip entirely when the directory is already correctly owned (e.g. a second invocation for a
+    // different file that shares the same .binds/<bind_name> but has already been set up).
+    if !dir_already_owned_by(&projects_dir, sudo_user) {
+        runner.run_command(
+            "chown",
+            &[&user_group, projects_dir.to_str().unwrap()],
+            "Set ownership of projects directory",
+        )?;
+    }
+
+    // Set ownership of the placeholder file inside projects/<namespace>/ to ensure it's accessible to the target user.
     runner.run_command(
         "chown",
-        &["-R", &user_group, projects_dir.to_str().unwrap()],
-        "Set ownership of projects directory",
+        &[&user_group, projects_file.to_str().unwrap()],
+        "Set ownership of projects placeholder file",
     )?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&projects_file)?.permissions();
-        perms.set_mode(0o500);
-        fs::set_permissions(&projects_file, perms)?;
+        let perms = fs::metadata(&projects_file)?.permissions();
+        if perms.mode() & 0o777 != 0o500 {
+            let mut new_perms = perms;
+            new_perms.set_mode(0o500);
+            fs::set_permissions(&projects_file, new_perms)?;
+        }
     }
 
     // Run bindfs
@@ -469,7 +522,60 @@ mod tests {
         );
     }
 
-    // --- unmount: path edge cases ---
+    // --- mount: chown safety ---
+
+    /// Regression test: mounting a second file in the same namespace must succeed even when
+    /// the `projects/<namespace>` directory already exists and contains a read-only placeholder
+    /// file left over from the first mount.
+    #[test]
+    fn mount_second_file_in_same_namespace_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let skadata = tmp.path().join("skadata");
+        let home = tmp.path().join("home");
+
+        // Seed two different files under the same skadata directory / namespace.
+        let data_dir = skadata.join("daac/08/06");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(data_dir.join("random10MiB.bin"), b"").unwrap();
+        fs::write(data_dir.join("other100MiB.bin"), b"").unwrap();
+
+        // First mount succeeds.
+        mount_operation_impl(
+            "/daac/08/06/random10MiB.bin",
+            NAMESPACE,
+            USER,
+            &skadata,
+            &home,
+            &MockRunner::new(),
+        )
+        .unwrap();
+
+        // Simulate the projects_dir placeholder from the first mount being read-only
+        // (as it would be after a real `mount --bind`).
+        let first_projects_file = home
+            .join(USER)
+            .join("projects")
+            .join(NAMESPACE)
+            .join("random10MiB.bin");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&first_projects_file).unwrap().permissions();
+            perms.set_mode(0o000); // no permissions — simulates a read-only bind mount
+            fs::set_permissions(&first_projects_file, perms).unwrap();
+        }
+
+        // Second mount with a different file in the same namespace must not error.
+        mount_operation_impl(
+            "/daac/08/06/other100MiB.bin",
+            NAMESPACE,
+            USER,
+            &skadata,
+            &home,
+            &MockRunner::new(),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn unmount_errors_on_path_with_no_filename() {
@@ -560,5 +666,207 @@ mod tests {
             other_file.exists(),
             "other file in same dir should be untouched"
         );
+    }
+
+    // --- integration tests (require root on Linux) ---
+    //
+    // These tests create a real system user to exercise actual `chown` behaviour —
+    // verifying ownership changes on disk rather than just the shape of command arguments.
+    //
+    // They are marked `#[ignore]` and are skipped at runtime when not running as root.
+    //
+    // Run locally:
+    //   docker build -f Dockerfile.test -t pf-test . && docker run --rm pf-test
+    //
+    // Run in CI: the `integration-test` job in .github/workflows/ci.yml runs them automatically.
+
+    use std::sync::Mutex;
+
+    /// Serialises integration tests that share the `pf_testuser` system user,
+    /// preventing conflicts when the test harness runs tests in parallel.
+    static INTEGRATION_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// RAII guard: creates the `pf_testuser` system user on construction and
+    /// removes it via `userdel` on drop, even if the test panics.
+    struct TestUser;
+
+    impl TestUser {
+        const NAME: &'static str = "pf_testuser";
+
+        /// Creates the test user, panicking if it already exists (leftover from a prior run).
+        fn create() -> Self {
+            if users::get_user_by_name(Self::NAME).is_some() {
+                panic!(
+                    "test user '{}' already exists on this system — \
+                     remove it first with: userdel {}",
+                    Self::NAME,
+                    Self::NAME,
+                );
+            }
+            let status = Command::new("useradd")
+                .args(["--no-create-home", "--system", Self::NAME])
+                .status()
+                .expect("failed to execute useradd — is it installed?");
+            assert!(
+                status.success(),
+                "useradd failed with exit status: {status}"
+            );
+            Self
+        }
+    }
+
+    impl Drop for TestUser {
+        fn drop(&mut self) {
+            let _ = Command::new("userdel").arg(Self::NAME).status();
+        }
+    }
+
+    /// Runner that executes `chown` for real (so ownership changes are visible on disk)
+    /// but mocks `bindfs` and `mount` to avoid needing those tools or mount privileges.
+    ///
+    /// All `run_command` calls are recorded so tests can inspect what was (or was not) invoked.
+    struct CapturingRealChownRunner {
+        commands: std::cell::RefCell<Vec<(String, Vec<String>)>>,
+        mountpoint_calls: Cell<usize>,
+    }
+
+    impl CapturingRealChownRunner {
+        fn new() -> Self {
+            Self {
+                commands: std::cell::RefCell::new(vec![]),
+                mountpoint_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl Runner for CapturingRealChownRunner {
+        fn run_command(&self, cmd: &str, args: &[&str], description: &str) -> Result<()> {
+            self.commands.borrow_mut().push((
+                cmd.to_string(),
+                args.iter().map(|s| s.to_string()).collect(),
+            ));
+            if cmd == "chown" {
+                run_command(cmd, args, description)
+            } else {
+                Ok(()) // mock bindfs and mount — no elevated mount privileges needed
+            }
+        }
+        fn is_mountpoint(&self, _path: &Path) -> Result<bool> {
+            let n = self.mountpoint_calls.get();
+            self.mountpoint_calls.set(n + 1);
+            Ok(n > 0)
+        }
+    }
+
+    /// Verifies that after a first mount the bind and projects directories are actually
+    /// owned by the target user on disk (uid and gid match), not just that a `chown`
+    /// command was issued with the right arguments.
+    #[test]
+    #[ignore = "requires root on Linux; run via `docker run --rm pf-test` or the CI integration-test job"]
+    fn integration_chown_sets_correct_ownership_on_first_mount() {
+        if unsafe { libc::getuid() } != 0 {
+            eprintln!("skipped: not running as root");
+            return;
+        }
+
+        let _guard = INTEGRATION_MUTEX.lock().unwrap();
+        let _user = TestUser::create();
+
+        let tmp = TempDir::new().unwrap();
+        let skadata = tmp.path().join("skadata");
+        seed_skadata(&skadata);
+        let home = tmp.path().join("home");
+
+        mount_operation_impl(
+            DATA_PATH,
+            NAMESPACE,
+            TestUser::NAME,
+            &skadata,
+            &home,
+            &CapturingRealChownRunner::new(),
+        )
+        .unwrap();
+
+        let bind_dir = home.join(TestUser::NAME).join(".binds").join("random10MiB");
+        let projects_dir = home.join(TestUser::NAME).join("projects").join(NAMESPACE);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let user = users::get_user_by_name(TestUser::NAME).unwrap();
+            let bind_meta = fs::metadata(&bind_dir).unwrap();
+            let proj_meta = fs::metadata(&projects_dir).unwrap();
+            assert_eq!(bind_meta.uid(), user.uid(), "bind_dir uid mismatch");
+            assert_eq!(
+                bind_meta.gid(),
+                user.primary_group_id(),
+                "bind_dir gid mismatch"
+            );
+            assert_eq!(proj_meta.uid(), user.uid(), "projects_dir uid mismatch");
+            assert_eq!(
+                proj_meta.gid(),
+                user.primary_group_id(),
+                "projects_dir gid mismatch"
+            );
+        }
+    }
+
+    /// Verifies that the placeholder file created inside `projects/<namespace>/` is owned
+    /// by the target user, not by root.
+    ///
+    /// The file is created by the process running as root (via `fs::OpenOptions`), so
+    /// without an explicit `chown` it would be root:root — inaccessible to the target user.
+    #[test]
+    #[ignore = "requires root on Linux; run via `docker run --rm pf-test` or the CI integration-test job"]
+    fn integration_projects_placeholder_file_is_owned_by_target_user() {
+        if unsafe { libc::getuid() } != 0 {
+            eprintln!("skipped: not running as root");
+            return;
+        }
+
+        let _guard = INTEGRATION_MUTEX.lock().unwrap();
+        let _user = TestUser::create();
+
+        let tmp = TempDir::new().unwrap();
+        let skadata = tmp.path().join("skadata");
+        seed_skadata(&skadata);
+        let home = tmp.path().join("home");
+
+        mount_operation_impl(
+            DATA_PATH,
+            NAMESPACE,
+            TestUser::NAME,
+            &skadata,
+            &home,
+            &CapturingRealChownRunner::new(),
+        )
+        .unwrap();
+
+        let projects_file = home
+            .join(TestUser::NAME)
+            .join("projects")
+            .join(NAMESPACE)
+            .join("random10MiB.bin");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let user = users::get_user_by_name(TestUser::NAME).unwrap();
+            let file_meta = fs::metadata(&projects_file).unwrap();
+            assert_eq!(
+                file_meta.uid(),
+                user.uid(),
+                "projects placeholder file uid should be {}, got {}",
+                user.uid(),
+                file_meta.uid()
+            );
+            assert_eq!(
+                file_meta.gid(),
+                user.primary_group_id(),
+                "projects placeholder file gid should be {}, got {}",
+                user.primary_group_id(),
+                file_meta.gid()
+            );
+        }
     }
 }
