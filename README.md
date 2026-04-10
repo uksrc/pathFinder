@@ -34,9 +34,9 @@ The `pathFinder` command is available to run on the CLI after logging into the S
           --unmount                Unmount previously mounted data instead of mounting
       -h, --help                   Print help
 
-#### OAUTH Authentication
+#### Authentication with SKA-IAM flow
 
-Example using SKAIAM OAuth2:
+Example using SKA-IAM OAuth2:
 
     $ sudo pathFinder --namespace daac --file-name simple_file.txt
 
@@ -60,7 +60,7 @@ Example with environment variables (e.g. for automation):
     export SITE_CAPABILITIES_ACCESS_TOKEN="your_token_here"
     sudo pathFinder --namespace daac --file-name simple_file.txt --no-login
 
-#### Unmounting Data
+### Unmount Data
 
 Example for unmounting a file:
 
