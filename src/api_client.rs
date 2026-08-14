@@ -67,6 +67,7 @@ impl ApiClient {
 /// See the trait for method documentation.
 impl PathFinderApiClient for ApiClient {
     fn check_namespace_available(&self, namespace: &str) -> Result<()> {
+        tracing::debug!("Checking namespace '{}' is available", namespace);
         let namespaces = self.get_all_namespaces()?;
         if !namespaces.contains(&namespace.to_string()) {
             anyhow::bail!(
@@ -75,6 +76,7 @@ impl PathFinderApiClient for ApiClient {
                 namespaces
             );
         }
+        tracing::debug!("Namespace available.");
         Ok(())
     }
 

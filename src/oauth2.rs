@@ -6,7 +6,7 @@
 //! Tokens are cached on disk (mode `0600`) and reused until they expire.
 
 use anyhow::{Context, Result};
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -80,21 +80,33 @@ struct CachedTokens {
 /// are returned immediately without prompting the user. Otherwise the full device-code flow is
 /// performed: the user is directed to a browser URL, and once authenticated the resulting tokens
 /// are cached for subsequent calls.
+///
+/// This is a synchronous function, but calls the underlying async function with a blocking command
 pub fn authenticate(use_cache: bool) -> Result<Tokens> {
-    authenticate_impl(use_cache, AUTHN_BASE_URL, None)
+    tokio::runtime::Runtime::new()
+        .context("Failed to create runtime")?
+        .block_on(authenticate_impl(use_cache, AUTHN_BASE_URL, None))
 }
 
 /// Inner implementation of [`authenticate`] with injectable base URL and cache path for testing.
-fn authenticate_impl(use_cache: bool, base_url: &str, cache_path: Option<&Path>) -> Result<Tokens> {
+async fn authenticate_impl(
+    use_cache: bool,
+    base_url: &str,
+    cache_path: Option<&Path>,
+) -> Result<Tokens> {
+    // If caching is enabled, check for valid cached tokens — if found, re-save (refresh expiry) and return
     if use_cache {
         if let Some(cached) = load_tokens(cache_path)? {
+            let default_path = get_token_cache_path()?;
+            let path = cache_path.unwrap_or(&default_path);
+            save_tokens_to_path(&cached, 3600, path)?;
             return Ok(cached);
         }
     }
 
     let client = Client::new();
 
-    let device_info = initiate_device_code_flow(&client, base_url)?;
+    let device_info = initiate_device_code_flow(&client, base_url).await?;
     display_user_instructions(&device_info);
 
     let auth_token = poll_for_authentication(
@@ -102,17 +114,40 @@ fn authenticate_impl(use_cache: bool, base_url: &str, cache_path: Option<&Path>)
         base_url,
         &device_info.device_code,
         device_info.interval,
-    )?;
+    ).await?;
 
-    let dm_token = exchange_token_for_api_token(&client, base_url, &auth_token, DATA_MANAGEMENT)?;
-    let sc_token = exchange_token_for_api_token(&client, base_url, &auth_token, SITE_CAPABILITIES)?;
+    let tokens = obtain_api_tokens(&client, base_url, &auth_token).await?;
+
+    save_tokens(cache_path, &tokens, 3600)?;
+
+    Ok(tokens)
+}
+
+pub async fn async_obtain_api_tokens(auth_token: &String) -> Result<Tokens> {
+    tracing::debug!("obtain_api_tokens_external called with {}", shorten_token(auth_token));
+    let client = Client::new();
+    obtain_api_tokens(&client, AUTHN_BASE_URL, auth_token).await
+}
+
+fn shorten_token(auth_token: &String) -> String {
+  let s = auth_token.as_str();
+  if s.chars().count() <= 10 {
+    return auth_token.clone()
+  }
+
+  let start = s.chars().take(5).collect::<String>();
+  let end = s.chars().rev().take(5).collect::<String>();
+  format!("{}...{}", start, end)
+}
+
+async fn obtain_api_tokens(client: &Client, base_url: &str, auth_token: &String) -> Result<Tokens> {
+    let dm_token = exchange_token_for_api_token(&client, base_url, &auth_token, DATA_MANAGEMENT).await?;
+    let sc_token = exchange_token_for_api_token(&client, base_url, &auth_token, SITE_CAPABILITIES).await?;
 
     let tokens = Tokens {
         data_management_token: dm_token,
         site_capabilities_token: sc_token,
     };
-
-    save_tokens(cache_path, &tokens, 3600)?;
 
     Ok(tokens)
 }
@@ -121,18 +156,20 @@ fn authenticate_impl(use_cache: bool, base_url: &str, cache_path: Option<&Path>)
 ///
 /// Returns the server's [`DeviceCodeResponse`] containing the `device_code` to poll with
 /// and the `verification_uri` + `user_code` to display to the user.
-fn initiate_device_code_flow(client: &Client, base_url: &str) -> Result<DeviceCodeResponse> {
+async fn initiate_device_code_flow(client: &Client, base_url: &str) -> Result<DeviceCodeResponse> {
     let url = format!("{}/login/device", base_url);
     let response = client
         .get(&url)
         .timeout(Duration::from_secs(10))
         .send()
+        .await
         .context("Failed to initiate device code flow")?;
 
     response
         .error_for_status()
         .context("Device code flow request failed")?
         .json()
+        .await
         .context("Failed to parse device code response")
 }
 
@@ -152,7 +189,7 @@ fn display_user_instructions(device_info: &DeviceCodeResponse) {
 /// - `authorization_pending` — keeps polling at the current interval
 /// - `slow_down` — backs off by 5 seconds and keeps polling
 /// - `expired_token` / `access_denied` — bails immediately with a descriptive error
-fn poll_for_authentication(
+async fn poll_for_authentication(
     client: &Client,
     base_url: &str,
     device_code: &str,
@@ -172,10 +209,11 @@ fn poll_for_authentication(
             .query(&[("device_code", device_code)])
             .timeout(Duration::from_secs(10))
             .send()
+            .await
             .context("Failed to poll for authentication")?;
 
         if response.status().is_success() {
-            let token_data: TokenResponse = response.json()?;
+            let token_data: TokenResponse = response.json().await.context("Unable to parse JSON from token exchange response.")?;
 
             if let Some(token) = token_data.token {
                 return Ok(token.access_token);
@@ -186,7 +224,7 @@ fn poll_for_authentication(
             }
         }
 
-        let error_data: TokenResponse = response.json()?;
+        let error_data: TokenResponse = response.json().await.context("Unable to parse JSON from token exchange error response.")?;
         let error = parse_error_response(&error_data);
 
         match error.as_deref() {
@@ -241,7 +279,7 @@ fn parse_error_response(error_data: &TokenResponse) -> Option<String> {
 
 /// Exchanges the OIDC auth token for an API-specific access token via
 /// `GET /token/exchange/<api_name>`.
-fn exchange_token_for_api_token(
+async fn exchange_token_for_api_token(
     client: &Client,
     base_url: &str,
     auth_token: &str,
@@ -258,12 +296,14 @@ fn exchange_token_for_api_token(
         ])
         .timeout(Duration::from_secs(10))
         .send()
+        .await
         .with_context(|| format!("Failed to exchange token for {} API", api_name))?;
 
     let token_data: TokenResponse = response
-        .error_for_status()
-        .with_context(|| format!("Token exchange failed for {}", api_name))?
-        .json()?;
+        .error_for_status()?
+        .json()
+        .await
+        .with_context(|| format!("Token exchange failed for {}", api_name))?;
 
     if let Some(token) = token_data.token {
         Ok(token.access_token)
