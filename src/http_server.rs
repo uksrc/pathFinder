@@ -5,6 +5,8 @@ use axum::{
     routing::{get, post},
     Extension, Router,
 };
+use futures::future::join_all;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
@@ -21,7 +23,7 @@ use crate::path_finder::run_spawn;
 #[derive(Debug, Deserialize)]
 pub struct StageInRequest {
     token: String,
-    did: String,
+    dids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,32 +105,48 @@ struct DidParse {
 }
 
 /// Parse a DID string into its component namespace & filename parts
+///
+/// On error return the unparsed DID
 fn parse_did(unparsed_did: &str) -> Result<DidParse, String> {
-    let parts: Vec<&str> = unparsed_did.splitn(2, ':').collect();
+    let parts: Vec<&str> = unparsed_did.split(':').collect();
     match parts.len() {
         2 => Ok(DidParse {
             namespace: parts[0].trim().to_string(),
             filename: parts[1].trim().to_string(),
         }),
-        _ => Err(format!(
-            "Could not split '{}' into two parts by ':'. Expected form: 'namespace:filename'",
-            unparsed_did
-        )),
+        _ => Err(unparsed_did.to_string()),
     }
 }
 
 /// Parse the DID or return a failed stage-in record
-async fn validate_did(
+async fn validate_dids(
     request: &StageInRequest,
     request_id: &str,
     store: &SharedStore,
-) -> Result<DidParse, StageInRecord> {
-    match parse_did(&request.did) {
-        Ok(result) => {
-            tracing::debug!("did parsed {} {}", result.filename, result.namespace);
-            Ok(result)
+) -> Result<Vec<DidParse>, StageInRecord> {
+    // Try to parse all DIDs
+    let results = join_all(request.dids.iter().map(|did| async {
+        match parse_did(did) {
+            Ok(result) => {
+                tracing::debug!("DID parsed: {{'namespace':'{}','filename':'{}'}}", result.namespace, result.filename);
+                Ok(result)
+            }
+            Err(unparsed_did) => {
+              tracing::debug!("DID not parsed: '{}'", unparsed_did);
+              Err(unparsed_did)
+            },
         }
-        Err(error) => Err(record_error(request_id.to_string(), error, store).await),
+    }))
+    .await;
+
+    // Handle any errors
+    let (parsed_dids, parsing_errors): (Vec<DidParse>, Vec<String>) = results.into_iter().partition_result();
+    match parsing_errors.is_empty() {
+        true => Ok(parsed_dids),
+        false => {
+            let error_message = format!("Unparsable DIDs in request: [{}]", parsing_errors.join(", "));
+            Err(record_error(request_id.to_string(), error_message, store).await)
+        }
     }
 }
 
@@ -152,7 +170,7 @@ async fn record_error(request_id: String, error_msg: String, store: &SharedStore
         input_path: None,
         output_path: None,
         work_path: None,
-        message: Some(format!("Error obtaining API tokens: {}", error_msg)),
+        message: Some(error_msg),
     };
     store.lock().await.insert(request_id, err_record.clone());
     err_record
@@ -169,7 +187,7 @@ async fn process_stage_in(
     tracing::debug!("process_stage_in called");
     let request_id = Uuid::new_v4().to_string();
 
-    let did: DidParse = match validate_did(request, &request_id, store).await {
+    let dids: Vec<DidParse> = match validate_dids(request, &request_id, store).await {
         Err(error_record) => {
             return (StatusCode::BAD_REQUEST, error_record.into());
         }
@@ -177,10 +195,10 @@ async fn process_stage_in(
     };
 
     let api_tokens = match validate_auth_token(&request.token, &request_id, store).await {
-      Err(error_record) => {
-        return (StatusCode::UNAUTHORIZED, error_record.into());
-      },
-      Ok(result) => result,
+        Err(error_record) => {
+            return (StatusCode::UNAUTHORIZED, error_record.into());
+        }
+        Ok(result) => result,
     };
 
     let parent_path = "/home/ska_service_user"; // TODO: Read from config file
@@ -201,9 +219,11 @@ async fn process_stage_in(
 
     // Spawn the mount operation on a blocking thread pool (ApiClient uses reqwest::blocking::Client).
     tokio::task::spawn_blocking(move || {
-        if let Err(error) = run_spawn(did.namespace.as_str(), did.filename.as_str(), api_tokens) {
+        for did in dids {
+        if let Err(error) = run_spawn(did.namespace.as_str(), did.filename.as_str(), &api_tokens) {
             tracing::error!("run_spawn failed: {}", error);
         }
+      }
     });
 
     // Return immediately with 202 Accepted (async operation started)
@@ -232,7 +252,7 @@ async fn stage_in(
     Extension(store): Extension<SharedStore>,
     Json(body): Json<StageInRequest>,
 ) -> (StatusCode, Json<StageInResponse>) {
-    tracing::info!("stage-in | data={}", body.did);
+    tracing::info!("stage-in | dids=[{}]", body.dids.join(","));
 
     let (status, response) = process_stage_in(&store, &body).await;
     (status, Json(response))

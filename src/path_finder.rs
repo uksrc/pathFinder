@@ -43,7 +43,7 @@ fn do_exit(code: i32) {
 
 /// Production wrapper: constructs an [`ApiClient`] from the supplied tokens and
 /// delegates to [`run_impl`] with the real path-finder helpers and [`do_exit`].
-pub fn run_spawn(namespace: &str, file_name: &str, tokens: Tokens) -> Result<()> {
+pub fn run_spawn(namespace: &str, file_name: &str, tokens: &Tokens) -> Result<()> {
     let client = ApiClient::new(
         tokens.data_management_token.clone(),
         tokens.site_capabilities_token.clone(),
