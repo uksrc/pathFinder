@@ -12,7 +12,6 @@ const SC_API_BASEURL: &str = "https://site-capabilities.srcnet.skao.int/api/v1";
 /// This trait allows for abstraction and easier testing of API interactions.
 /// The `ApiClient` struct provides a concrete implementation.
 pub trait PathFinderApiClient {
-
     /// Checks if the specified namespace is available by querying the DM API.
     fn check_namespace_available(&self, namespace: &str) -> Result<()>;
 

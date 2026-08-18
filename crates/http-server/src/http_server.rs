@@ -8,13 +8,16 @@ use axum::{
 use futures::future::join_all;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::Mutex;
+use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
-use pathfinder_shared::oauth2::{async_obtain_api_tokens, Tokens};
-use pathfinder_shared::path_finder::run_spawn;
+use pathfinder_shared::{
+    jwt::validate_jwt,
+    oauth2::{async_obtain_api_tokens, Tokens},
+    path_finder::run_spawn,
+    store::{RecordState, SharedStore, StageInRecord},
+};
 
 // ---------------------------------------------------------------------------
 // Request / response models (mirroring the Python FastAPI app)
@@ -28,7 +31,7 @@ pub struct StageInRequest {
 
 #[derive(Debug, Serialize)]
 pub struct StageInResponse {
-    request_id: String,
+    request_id: Uuid,
     state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     input_path: Option<String>,
@@ -53,6 +56,20 @@ impl From<StageInRecord> for StageInResponse {
     }
 }
 
+impl From<pathfinder_shared::store::RequestStoreRow> for StageInResponse {
+    fn from(row: pathfinder_shared::store::RequestStoreRow) -> Self {
+        let record = row.to_stage_in_record();
+        StageInResponse {
+            request_id: record.request_id,
+            state: format!("{:?}", record.state),
+            input_path: record.input_path,
+            output_path: record.output_path,
+            work_path: record.work_path,
+            message: record.message,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StageOutRequest {
     token: String,
@@ -65,33 +82,6 @@ pub struct StageOutRequest {
 pub struct StageOutResponse {
     acknowledged: bool,
     audit_ref: String,
-}
-
-// ---------------------------------------------------------------------------
-// Stub: shared in-memory record store
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize)]
-enum RecordState {
-    Started,
-    Finished,
-    Failed,
-}
-
-#[derive(Debug, Clone)]
-pub struct StageInRecord {
-    request_id: String,
-    state: RecordState,
-    input_path: Option<String>,
-    output_path: Option<String>,
-    work_path: Option<String>,
-    message: Option<String>,
-}
-
-pub type SharedStore = Arc<Mutex<std::collections::HashMap<String, StageInRecord>>>;
-
-pub fn create_store() -> SharedStore {
-    Arc::new(Mutex::new(std::collections::HashMap::new()))
 }
 
 // ---------------------------------------------------------------------------
@@ -121,49 +111,78 @@ fn parse_did(unparsed_did: &str) -> Result<DidParse, String> {
 /// Parse the DID or return a failed stage-in record
 async fn validate_dids(
     request: &StageInRequest,
-    request_id: &str,
+    request_id: &Uuid,
+    user_sub: &str,
     store: &SharedStore,
 ) -> Result<Vec<DidParse>, StageInRecord> {
     // Try to parse all DIDs
     let results = join_all(request.dids.iter().map(|did| async {
         match parse_did(did) {
             Ok(result) => {
-                tracing::debug!("DID parsed: {{'namespace':'{}','filename':'{}'}}", result.namespace, result.filename);
+                tracing::debug!(
+                    "DID parsed: {{'namespace':'{}','filename':'{}'}}",
+                    result.namespace,
+                    result.filename
+                );
                 Ok(result)
             }
             Err(unparsed_did) => {
-              tracing::debug!("DID not parsed: '{}'", unparsed_did);
-              Err(unparsed_did)
-            },
+                tracing::debug!("DID not parsed: '{}'", unparsed_did);
+                Err(unparsed_did)
+            }
         }
     }))
     .await;
 
     // Handle any errors
-    let (parsed_dids, parsing_errors): (Vec<DidParse>, Vec<String>) = results.into_iter().partition_result();
+    let (parsed_dids, parsing_errors): (Vec<DidParse>, Vec<String>) =
+        results.into_iter().partition_result();
     match parsing_errors.is_empty() {
         true => Ok(parsed_dids),
         false => {
-            let error_message = format!("Unparsable DIDs in request: [{}]", parsing_errors.join(", "));
-            Err(record_error(request_id.to_string(), error_message, store).await)
+            let error_message = format!(
+                "Unparsable DIDs in request: [{}]",
+                parsing_errors.join(", ")
+            );
+            Err(record_error(request_id, user_sub, error_message, store).await)
         }
+    }
+}
+
+/// Validate the request token as a JWT or return a failed stage-in record.
+///
+/// On success returns the token's `sub` claim, identifying the user.
+async fn validate_token_jwt(
+    token: &str,
+    request_id: &Uuid,
+    store: &SharedStore,
+) -> Result<String, StageInRecord> {
+    match validate_jwt(token) {
+        Ok(claims) => Ok(claims.sub),
+        Err(error) => Err(record_error(request_id, "", error.to_string(), store).await),
     }
 }
 
 /// Parse the auth token or return a failed stage-in record
 async fn validate_auth_token(
     auth_token: &str,
-    request_id: &str,
+    request_id: &Uuid,
+    user_sub: &str,
     store: &SharedStore,
 ) -> Result<Tokens, StageInRecord> {
     match async_obtain_api_tokens(&auth_token.to_string()).await {
         Ok(tokens) => Ok(tokens),
-        Err(error) => Err(record_error(request_id.to_string(), error.to_string(), store).await),
+        Err(error) => Err(record_error(request_id, user_sub, error.to_string(), store).await),
     }
 }
 
 /// Record an error record
-async fn record_error(request_id: String, error_msg: String, store: &SharedStore) -> StageInRecord {
+async fn record_error(
+    request_id: &Uuid,
+    user_sub: &str,
+    error_msg: String,
+    store: &SharedStore,
+) -> StageInRecord {
     let err_record = StageInRecord {
         request_id: request_id.clone(),
         state: RecordState::Failed,
@@ -172,7 +191,18 @@ async fn record_error(request_id: String, error_msg: String, store: &SharedStore
         work_path: None,
         message: Some(error_msg),
     };
-    store.lock().await.insert(request_id, err_record.clone());
+    if let Err(err) = store
+        .initialise_request_record(
+            request_id,
+            &user_sub.to_string(),
+            Some(err_record.clone()),
+            None,
+            &RecordState::Failed,
+        )
+        .await
+    {
+        tracing::error!("failed to record error: {}", err);
+    }
     err_record
 }
 
@@ -185,16 +215,24 @@ async fn process_stage_in(
     request: &StageInRequest,
 ) -> (StatusCode, StageInResponse) {
     tracing::debug!("process_stage_in called");
-    let request_id = Uuid::new_v4().to_string();
+    let request_id = Uuid::new_v4();
 
-    let dids: Vec<DidParse> = match validate_dids(request, &request_id, store).await {
+    let user_sub = match validate_token_jwt(&request.token, &request_id, store).await {
+        Err(error_record) => {
+            return (StatusCode::UNAUTHORIZED, error_record.into());
+        }
+        Ok(sub) => sub,
+    };
+
+    let dids: Vec<DidParse> = match validate_dids(request, &request_id, &user_sub, store).await {
         Err(error_record) => {
             return (StatusCode::BAD_REQUEST, error_record.into());
         }
         Ok(result) => result,
     };
 
-    let api_tokens = match validate_auth_token(&request.token, &request_id, store).await {
+    let api_tokens = match validate_auth_token(&request.token, &request_id, &user_sub, store).await
+    {
         Err(error_record) => {
             return (StatusCode::UNAUTHORIZED, error_record.into());
         }
@@ -202,7 +240,6 @@ async fn process_stage_in(
     };
 
     let parent_path = "/home/ska_service_user"; // TODO: Read from config file
-
     let record = StageInRecord {
         request_id: request_id.clone(),
         state: RecordState::Started,
@@ -212,18 +249,28 @@ async fn process_stage_in(
         message: None,
     };
 
-    store
-        .lock()
+    if let Err(err) = store
+        .initialise_request_record(
+            &request_id,
+            &user_sub,
+            Some(record.clone()),
+            Some(request.dids.clone()),
+            &RecordState::Started,
+        )
         .await
-        .insert(request_id.clone(), record.clone());
+    {
+        tracing::error!("failed to initialise request record: {}", err);
+    }
 
     // Spawn the mount operation on a blocking thread pool (ApiClient uses reqwest::blocking::Client).
     tokio::task::spawn_blocking(move || {
         for did in dids {
-        if let Err(error) = run_spawn(did.namespace.as_str(), did.filename.as_str(), &api_tokens) {
-            tracing::error!("run_spawn failed: {}", error);
+            if let Err(error) =
+                run_spawn(did.namespace.as_str(), did.filename.as_str(), &api_tokens)
+            {
+                tracing::error!("run_spawn failed: {}", error);
+            }
         }
-      }
     });
 
     // Return immediately with 202 Accepted (async operation started)
@@ -261,25 +308,34 @@ async fn stage_in(
 /// GET /stage-in/{request_id} — poll the status of an async stage-in request.
 async fn get_stage_in_status(
     Extension(store): Extension<SharedStore>,
-    Path(request_id): Path<String>,
+    Path(request_id): Path<Uuid>,
 ) -> (StatusCode, Json<StageInResponse>) {
-    let store = store.lock().await;
-
-    match store.get(&request_id) {
-        Some(record) => {
-            let response = record.clone().into();
+    match store.get(&request_id).await {
+        Ok(Some(record)) => {
+            let response = record.into();
             (StatusCode::OK, Json(response))
         }
-        None => {
+        Ok(None) => {
             let response = StageInResponse {
                 request_id: request_id.clone(),
                 state: "NOT_FOUND".into(),
                 input_path: None,
                 output_path: None,
                 work_path: None,
-                message: Some(format!("No stage-in record found for {}", request_id)),
+                message: Some(format!("No request found with ID: {}", request_id)),
             };
             (StatusCode::NOT_FOUND, Json(response))
+        }
+        Err(err) => {
+            let response = StageInResponse {
+                request_id: request_id.clone(),
+                state: "NOT_FOUND".into(),
+                input_path: None,
+                output_path: None,
+                work_path: None,
+                message: Some(format!("Error retrieving request record. {}", err)),
+            };
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(response))
         }
     }
 }

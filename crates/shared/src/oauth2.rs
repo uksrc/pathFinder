@@ -114,7 +114,8 @@ async fn authenticate_impl(
         base_url,
         &device_info.device_code,
         device_info.interval,
-    ).await?;
+    )
+    .await?;
 
     let tokens = obtain_api_tokens(&client, base_url, &auth_token).await?;
 
@@ -124,25 +125,30 @@ async fn authenticate_impl(
 }
 
 pub async fn async_obtain_api_tokens(auth_token: &String) -> Result<Tokens> {
-    tracing::debug!("obtain_api_tokens_external called with {}", shorten_token(auth_token));
+    tracing::debug!(
+        "obtain_api_tokens_external called with {}",
+        shorten_token(auth_token)
+    );
     let client = Client::new();
     obtain_api_tokens(&client, AUTHN_BASE_URL, auth_token).await
 }
 
 fn shorten_token(auth_token: &String) -> String {
-  let s = auth_token.as_str();
-  if s.chars().count() <= 10 {
-    return auth_token.clone()
-  }
+    let s = auth_token.as_str();
+    if s.chars().count() <= 10 {
+        return auth_token.clone();
+    }
 
-  let start = s.chars().take(5).collect::<String>();
-  let end = s.chars().rev().take(5).collect::<String>();
-  format!("{}...{}", start, end)
+    let start = s.chars().take(5).collect::<String>();
+    let end = s.chars().rev().take(5).collect::<String>();
+    format!("{}...{}", start, end)
 }
 
 async fn obtain_api_tokens(client: &Client, base_url: &str, auth_token: &String) -> Result<Tokens> {
-    let dm_token = exchange_token_for_api_token(&client, base_url, &auth_token, DATA_MANAGEMENT).await?;
-    let sc_token = exchange_token_for_api_token(&client, base_url, &auth_token, SITE_CAPABILITIES).await?;
+    let dm_token =
+        exchange_token_for_api_token(&client, base_url, &auth_token, DATA_MANAGEMENT).await?;
+    let sc_token =
+        exchange_token_for_api_token(&client, base_url, &auth_token, SITE_CAPABILITIES).await?;
 
     let tokens = Tokens {
         data_management_token: dm_token,
@@ -213,7 +219,10 @@ async fn poll_for_authentication(
             .context("Failed to poll for authentication")?;
 
         if response.status().is_success() {
-            let token_data: TokenResponse = response.json().await.context("Unable to parse JSON from token exchange response.")?;
+            let token_data: TokenResponse = response
+                .json()
+                .await
+                .context("Unable to parse JSON from token exchange response.")?;
 
             if let Some(token) = token_data.token {
                 return Ok(token.access_token);
@@ -224,7 +233,10 @@ async fn poll_for_authentication(
             }
         }
 
-        let error_data: TokenResponse = response.json().await.context("Unable to parse JSON from token exchange error response.")?;
+        let error_data: TokenResponse = response
+            .json()
+            .await
+            .context("Unable to parse JSON from token exchange error response.")?;
         let error = parse_error_response(&error_data);
 
         match error.as_deref() {
