@@ -1,17 +1,11 @@
-mod path_finder;
-mod api_client;
 mod cli;
-mod models;
-mod mount;
-mod oauth2;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use pathfinder_shared::{mount, oauth2::authenticate, path_finder::run};
 use std::env;
 
 use cli::{check_privileges, get_tokens_from_env, Args};
-use oauth2::authenticate;
-use path_finder::run;
 
 fn main() -> Result<()> {
     let args = Args::parse();

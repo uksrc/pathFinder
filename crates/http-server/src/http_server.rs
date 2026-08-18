@@ -13,8 +13,8 @@ use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
-use crate::oauth2::{async_obtain_api_tokens, Tokens};
-use crate::path_finder::run_spawn;
+use pathfinder_shared::oauth2::{async_obtain_api_tokens, Tokens};
+use pathfinder_shared::path_finder::run_spawn;
 
 // ---------------------------------------------------------------------------
 // Request / response models (mirroring the Python FastAPI app)

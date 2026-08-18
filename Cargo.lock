@@ -1507,17 +1507,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "pathfinder"
+name = "pathfinder-cli"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libc",
+ "pathfinder-shared",
+]
+
+[[package]]
+name = "pathfinder-http-server"
 version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum",
- "clap",
- "dirs",
  "futures",
- "httpmock",
  "itertools",
- "libc",
+ "pathfinder-shared",
+ "serde",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "pathfinder-shared"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "httpmock",
  "regex",
  "reqwest",
  "serde",
@@ -1525,12 +1547,8 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tower",
- "tower-http",
  "tracing",
- "tracing-subscriber",
  "users",
- "uuid",
 ]
 
 [[package]]

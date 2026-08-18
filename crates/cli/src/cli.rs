@@ -13,9 +13,8 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use pathfinder_shared::oauth2::Tokens;
 use std::env;
-
-use crate::oauth2::Tokens;
 
 /// ** pathFinder **
 ///
