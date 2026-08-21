@@ -31,5 +31,6 @@ fn main() -> Result<()> {
         tokens
     };
 
+    // TODO: Add persistent store to the CLI
     run(&args.namespace, &args.file_name, &tokens)
 }

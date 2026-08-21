@@ -58,8 +58,9 @@ pub struct RequestStoreRow {
     pub output_path: Option<String>,
     pub work_path: Option<String>,
     pub dids_mounted: Json<Option<Vec<String>>>,
-    pub dids_unmounted: Json<Option<Vec<String>>>,
+    pub dids_requested: Json<Option<Vec<String>>>,
     pub status: RecordState,
+    pub message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -72,7 +73,7 @@ impl RequestStoreRow {
             input_path: self.input_path.clone(),
             output_path: self.output_path.clone(),
             work_path: self.work_path.clone(),
-            message: None,
+            message: self.message.clone(),
         }
     }
 }
@@ -87,8 +88,9 @@ impl From<&StageInRecord> for RequestStoreRow {
             output_path: record.output_path.clone(),
             work_path: record.work_path.clone(),
             dids_mounted: Json(None),
-            dids_unmounted: Json(None),
+            dids_requested: Json(None),
             status: record.state.clone(),
+            message: record.message.clone(),
             created_at: now_utc,
             updated_at: now_utc,
         }
@@ -120,6 +122,15 @@ impl SharedStore {
         Ok(entry)
     }
 
+    pub async fn exists(&self, request_id: &Uuid) -> anyhow::Result<bool> {
+        let row: (bool,) =
+            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM request_store WHERE request_id = ?)")
+                .bind(request_id.to_string())
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.0)
+    }
+
     pub async fn initialise_request_record(
         &self,
         request_id: &Uuid,
@@ -141,16 +152,17 @@ impl SharedStore {
         let row = RequestStoreRow::from(&record);
         sqlx::query(
             r#"INSERT INTO request_store
-                (request_id, user_sub, input_path, output_path, work_path, dids_mounted, dids_unmounted, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (request_id, user_sub, input_path, output_path, work_path, dids_mounted, dids_requested, status, message, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id) DO UPDATE SET
                 user_sub = excluded.user_sub,
                 input_path = excluded.input_path,
                 output_path = excluded.output_path,
                 work_path = excluded.work_path,
                 dids_mounted = excluded.dids_mounted,
-                dids_unmounted = excluded.dids_unmounted,
+                dids_requested = excluded.dids_requested,
                 status = excluded.status,
+                message = excluded.message,
                 updated_at = excluded.updated_at"#,
         )
         .bind(row.request_id.to_string())
@@ -161,12 +173,96 @@ impl SharedStore {
         .bind(Json::<Vec<String>>(vec![]))
         .bind(Json(dids))
         .bind(row.status.to_string())
+        .bind(row.message)
         .bind(row.created_at)
         .bind(row.updated_at)
         .execute(&self.pool)
         .await?;
 
         Ok(())
+    }
+
+    async fn touch_updated_at(&self, request_id: &Uuid) -> anyhow::Result<()> {
+        let now = chrono::Utc::now();
+        sqlx::query("UPDATE request_store SET updated_at = ? WHERE request_id = ?")
+            .bind(now)
+            .bind(request_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_dids_mounted(
+        &self,
+        request_id: &Uuid,
+        dids: Vec<String>,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE request_store SET dids_mounted = ? WHERE request_id = ?")
+            .bind(Json(dids))
+            .bind(request_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        self.touch_updated_at(request_id).await
+    }
+
+    /// Append a single DID to the mounted list for a given request.
+    pub async fn add_did_mounted(&self, request_id: &Uuid, did: &str) -> anyhow::Result<()> {
+        // Read current list, append, write back
+        if let Some(row) = self.get(request_id).await? {
+            let mut mounted: Vec<String> = row.dids_mounted.0.unwrap_or_default();
+            mounted.push(did.to_string());
+            self.update_dids_mounted(request_id, mounted).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn update_dids_requested(
+        &self,
+        request_id: &Uuid,
+        dids: Vec<String>,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE request_store SET dids_requested = ? WHERE request_id = ?")
+            .bind(Json(dids))
+            .bind(request_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        self.touch_updated_at(request_id).await
+    }
+
+    pub async fn update_status(
+        &self,
+        request_id: &Uuid,
+        status: &RecordState,
+    ) -> anyhow::Result<()> {
+        sqlx::query("UPDATE request_store SET status = ? WHERE request_id = ?")
+            .bind(status.to_string())
+            .bind(request_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        self.touch_updated_at(request_id).await
+    }
+
+    pub async fn update_message(&self, request_id: &Uuid, message: String) -> anyhow::Result<()> {
+        sqlx::query("UPDATE request_store SET message = ? WHERE request_id = ?")
+            .bind(message)
+            .bind(request_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        self.touch_updated_at(request_id).await
+    }
+
+    pub async fn fail_stale_requests(&self) -> anyhow::Result<u64> {
+        let now = chrono::Utc::now();
+        let result = sqlx::query(
+            "UPDATE request_store SET status = ?, message = ?, updated_at = ? WHERE status = ?",
+        )
+        .bind(RecordState::Failed.to_string())
+        .bind("pathfinder service restart invalidated request")
+        .bind(now)
+        .bind(RecordState::Started.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn delete(&self, request_id: &Uuid) -> anyhow::Result<()> {
@@ -179,7 +275,7 @@ impl SharedStore {
 
     pub async fn list(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<RequestStoreRow>> {
         let entries = sqlx::query_as::<_, RequestStoreRow>(
-            "SELECT request_id, input_path, output_path, work_path, dids_mounted, dids_unmounted, status, created_at, updated_at FROM request_store ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT request_id, user_sub, input_path, output_path, work_path, dids_mounted, dids_requested, status, message, created_at, updated_at FROM request_store ORDER BY created_at DESC LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)

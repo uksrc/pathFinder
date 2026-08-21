@@ -13,11 +13,9 @@ use pathfinder_shared::store::SharedStore;
 async fn main() -> Result<(), anyhow::Error> {
     configure_logging();
 
-    let db_path = "/Users/roger.duthie/.sqlite/pathfinder.db";
+    let db_path = "/Users/roger.duthie/.sqlite/pathfinder.db"; // TODO: Read from a config file
     let store = SharedStore::new(db_path).await?;
-
-    // TODO: Check if option to mark `Started` requests as `Failed` in the database is set
-    // TODO: Think of a good verb to describe what this process is (`cleanse`?)
+    store.fail_stale_requests().await?; // Any existing "Started" requests are set to "Failed" on restart
 
     let addr = ([127, 0, 0, 1], 8765).into();
 

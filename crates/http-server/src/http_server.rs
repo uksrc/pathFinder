@@ -262,16 +262,37 @@ async fn process_stage_in(
         tracing::error!("failed to initialise request record: {}", err);
     }
 
-    // Spawn the mount operation on a blocking thread pool (ApiClient uses reqwest::blocking::Client).
-    tokio::task::spawn_blocking(move || {
-        for did in dids {
-            if let Err(error) =
-                run_spawn(did.namespace.as_str(), did.filename.as_str(), &api_tokens)
-            {
-                tracing::error!("run_spawn failed: {}", error);
+    // Spawn one async task per DID — each runs its mount on a blocking thread
+    // and updates the store on failure. The handler returns 202 immediately.
+    for did in dids {
+        let store = store.clone();
+        let api_tokens = api_tokens.clone();
+        let did_str = format!("{}:{}", did.namespace, did.filename);
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                run_spawn(&did.namespace, &did.filename, &api_tokens)
+            })
+            .await;
+
+            match result {
+                Err(err) => {
+                    tracing::error!("mount task panicked: {}", err);
+                    let _ = store.update_status(&request_id, &RecordState::Failed).await;
+                    let _ = store.update_message(&request_id, err.to_string()).await;
+                }
+                Ok(Err(err)) => {
+                    tracing::error!("run_spawn failed: {}", err);
+                    let _ = store.update_status(&request_id, &RecordState::Failed).await;
+                    let _ = store.update_message(&request_id, err.to_string()).await;
+                }
+                Ok(Ok(())) => {
+                    if let Err(err) = store.add_did_mounted(&request_id, &did_str).await {
+                        tracing::error!("failed to record mounted DID: {}", err);
+                    }
+                }
             }
-        }
-    });
+        });
+    }
 
     // Return immediately with 202 Accepted (async operation started)
     (StatusCode::ACCEPTED, record.into())
