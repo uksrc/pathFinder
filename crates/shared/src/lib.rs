@@ -1,5 +1,6 @@
 pub mod api_client;
 pub mod jwt;
+pub mod jwks_auth;
 pub mod models;
 pub mod mount;
 pub mod oauth2;

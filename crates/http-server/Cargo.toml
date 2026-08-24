@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 axum = { version = "0.8", features = ["macros"] }
+axum-jwt-auth = "0.7.0"
 futures = "0.3.34"
 itertools = "*"
 pathfinder-shared = { path = "../shared" }

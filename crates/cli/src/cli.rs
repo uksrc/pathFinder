@@ -7,13 +7,12 @@
 //! * [`check_privileges`] — verifies the process is running as root via `sudo`
 //!   and that `SUDO_USER` is set, bailing out with a user-friendly re-invocation
 //!   hint otherwise.
-//! * [`get_tokens_from_env`] — reads pre-issued API tokens from environment
-//!   variables, used when the caller wants to skip the OAuth2 device-code flow
-//!   (`--no-login`).
+//! * [`resolve_auth_token`] — determines the bearer token to use, either from
+//!   `--token`, the `PATHFINDER_SKA_AUTH_TOKEN` environment variable, or an
+//!   error if neither is set.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
-use pathfinder_shared::oauth2::Tokens;
 use std::env;
 
 /// ** pathFinder **
@@ -31,11 +30,15 @@ pub struct Args {
     #[arg(long)]
     pub file_name: String,
 
-    /// Skip the OAuth2 device-code flow and read tokens from
-    /// DATA_MANAGEMENT_ACCESS_TOKEN and SITE_CAPABILITIES_ACCESS_TOKEN
-    /// instead.
-    #[arg(long)]
-    pub no_login: bool,
+    /// Raw JWT token used to authenticate the caller. The token is validated
+    /// against the OIDC JWKS and then exchanged for the Data Management and
+    /// Site Capabilities API tokens.
+    ///
+    /// If omitted, the interactive OAuth2 device-code flow is used. If
+    /// provided without a value, the `PATHFINDER_SKA_AUTH_TOKEN` environment
+    /// variable is used.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub token: Option<String>,
 
     /// Unmount a file instead of mounting it.
     #[arg(long)]
@@ -102,23 +105,34 @@ fn check_privileges_impl(euid: u32, sudo_user: Option<&str>, args: &Args) -> Res
     Ok(())
 }
 
-/// Reads API access tokens from the `DATA_MANAGEMENT_ACCESS_TOKEN` and
-/// `SITE_CAPABILITIES_ACCESS_TOKEN` environment variables.
+/// Environment variable used as the fallback bearer token source when
+/// `--token` is not supplied with a value.
+pub const AUTH_TOKEN_ENV_VAR: &str = "PATHFINDER_SKA_AUTH_TOKEN";
+
+/// Resolves the bearer token to use for authentication.
 ///
-/// This is the token source used with `--no-login`.  Both variables must be
-/// present; a descriptive error is returned if either is absent so the user
-/// knows exactly which one to export.
-pub fn get_tokens_from_env() -> Result<Tokens> {
-    let dm_token = env::var("DATA_MANAGEMENT_ACCESS_TOKEN")
-        .context("Please set DATA_MANAGEMENT_ACCESS_TOKEN environment variable or omit --no-login to use OAuth2")?;
-
-    let sc_token = env::var("SITE_CAPABILITIES_ACCESS_TOKEN")
-        .context("Please set SITE_CAPABILITIES_ACCESS_TOKEN environment variable or omit --no-login to use OAuth2")?;
-
-    Ok(Tokens {
-        data_management_token: dm_token,
-        site_capabilities_token: sc_token,
-    })
+/// * `--token <TOKEN>` → returns `Ok(Some(TOKEN))`.
+/// * `--token` with no value → looks at the `PATHFINDER_SKA_AUTH_TOKEN`
+///   environment variable. If it is set and non-empty, returns
+///   `Ok(Some(token))`; otherwise returns an error explaining how to supply
+///   the token.
+/// * No `--token` flag at all → returns `Ok(None)`, signalling the caller to
+///   use the interactive OAuth2 device-code flow.
+pub fn resolve_auth_token(args: &Args) -> Result<Option<String>> {
+    match args.token.as_deref() {
+        Some(token) if !token.is_empty() => Ok(Some(token.to_string())),
+        Some(_) => match env::var(AUTH_TOKEN_ENV_VAR) {
+            Ok(token) if !token.is_empty() => Ok(Some(token)),
+            _ => {
+                eprintln!("\nError: --token was provided without a value, but PATHFINDER_SKA_AUTH_TOKEN is not set.");
+                eprintln!("Provide a token on the command line with:");
+                eprintln!("  --token <TOKEN>");
+                eprintln!("Or set the PATHFINDER_SKA_AUTH_TOKEN environment variable.");
+                anyhow::bail!("missing authentication token")
+            }
+        },
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -134,7 +148,7 @@ mod tests {
         Args {
             namespace: "ska:ska-sdp/eb-m001-20240101-00000".into(),
             file_name: "data.fits".into(),
-            no_login: false,
+            token: None,
             unmount: false,
         }
     }
@@ -143,7 +157,7 @@ mod tests {
         Args {
             namespace: "ska:ska-sdp/eb-m001-20240101-00000".into(),
             file_name: "data.fits".into(),
-            no_login: false,
+            token: None,
             unmount: true,
         }
     }
@@ -189,55 +203,53 @@ mod tests {
             .expect("should succeed when euid == 0 and SUDO_USER is set");
     }
 
-    // ── get_tokens_from_env ──────────────────────────────────────────────────
+    // ── resolve_auth_token ───────────────────────────────────────────────────
 
     #[test]
-    fn get_tokens_from_env_returns_tokens_when_both_set() {
+    fn resolve_auth_token_prefers_command_line_value() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        env::set_var("DATA_MANAGEMENT_ACCESS_TOKEN", "dm-test-token");
-        env::set_var("SITE_CAPABILITIES_ACCESS_TOKEN", "sc-test-token");
+        env::set_var(AUTH_TOKEN_ENV_VAR, "env-token");
 
-        let result = get_tokens_from_env();
+        let mut args = mount_args();
+        args.token = Some("cli-token".to_string());
 
-        env::remove_var("DATA_MANAGEMENT_ACCESS_TOKEN");
-        env::remove_var("SITE_CAPABILITIES_ACCESS_TOKEN");
+        let token = resolve_auth_token(&args).unwrap();
+        assert_eq!(token, Some("cli-token".to_string()));
 
-        let tokens = result.expect("should succeed when both vars are set");
-        assert_eq!(tokens.data_management_token, "dm-test-token");
-        assert_eq!(tokens.site_capabilities_token, "sc-test-token");
+        env::remove_var(AUTH_TOKEN_ENV_VAR);
     }
 
     #[test]
-    fn get_tokens_from_env_errors_when_dm_token_absent() {
+    fn resolve_auth_token_falls_back_to_environment_variable() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        env::remove_var("DATA_MANAGEMENT_ACCESS_TOKEN");
-        env::set_var("SITE_CAPABILITIES_ACCESS_TOKEN", "sc-test-token");
+        env::set_var(AUTH_TOKEN_ENV_VAR, "env-token");
 
-        let result = get_tokens_from_env();
+        let token = resolve_auth_token(&mount_args()).unwrap();
+        assert_eq!(token, Some("env-token".to_string()));
 
-        env::remove_var("SITE_CAPABILITIES_ACCESS_TOKEN");
-
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("DATA_MANAGEMENT_ACCESS_TOKEN"),
-            "unexpected error: {err}"
-        );
+        env::remove_var(AUTH_TOKEN_ENV_VAR);
     }
 
     #[test]
-    fn get_tokens_from_env_errors_when_sc_token_absent() {
+    fn resolve_auth_token_returns_none_when_missing() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        env::set_var("DATA_MANAGEMENT_ACCESS_TOKEN", "dm-test-token");
-        env::remove_var("SITE_CAPABILITIES_ACCESS_TOKEN");
+        env::remove_var(AUTH_TOKEN_ENV_VAR);
 
-        let result = get_tokens_from_env();
+        let token = resolve_auth_token(&mount_args()).unwrap();
+        assert_eq!(token, None);
+    }
 
-        env::remove_var("DATA_MANAGEMENT_ACCESS_TOKEN");
+    #[test]
+    fn resolve_auth_token_ignores_empty_command_line_token() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        env::set_var(AUTH_TOKEN_ENV_VAR, "env-token");
 
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("SITE_CAPABILITIES_ACCESS_TOKEN"),
-            "unexpected error: {err}"
-        );
+        let mut args = mount_args();
+        args.token = Some("".to_string());
+
+        let token = resolve_auth_token(&args).unwrap();
+        assert_eq!(token, Some("env-token".to_string()));
+
+        env::remove_var(AUTH_TOKEN_ENV_VAR);
     }
 }

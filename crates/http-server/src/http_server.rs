@@ -1,10 +1,11 @@
 use axum::{
-    extract::Path,
-    http::StatusCode,
+    extract::{FromRef, Path, State},
+    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     response::Json,
     routing::{get, post},
-    Extension, Router,
+    Router,
 };
+use axum_jwt_auth::{Claims, Decoder};
 use futures::future::join_all;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -13,7 +14,7 @@ use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use pathfinder_shared::{
-    jwt::validate_jwt,
+    jwt::JwtClaims,
     oauth2::{async_obtain_api_tokens, Tokens},
     path_finder::run_spawn,
     store::{RecordState, SharedStore, StageInRecord},
@@ -25,7 +26,6 @@ use pathfinder_shared::{
 
 #[derive(Debug, Deserialize)]
 pub struct StageInRequest {
-    token: String,
     dids: Vec<String>,
 }
 
@@ -72,7 +72,6 @@ impl From<pathfinder_shared::store::RequestStoreRow> for StageInResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct StageOutRequest {
-    token: String,
     data: String,
     scratch_space: String,
     request_id: String,
@@ -149,18 +148,14 @@ async fn validate_dids(
     }
 }
 
-/// Validate the request token as a JWT or return a failed stage-in record.
-///
-/// On success returns the token's `sub` claim, identifying the user.
-async fn validate_token_jwt(
-    token: &str,
-    request_id: &Uuid,
-    store: &SharedStore,
-) -> Result<String, StageInRecord> {
-    match validate_jwt(token) {
-        Ok(claims) => Ok(claims.sub),
-        Err(error) => Err(record_error(request_id, "", error.to_string(), store).await),
-    }
+/// Extract the raw bearer token from the `Authorization: Bearer <token>` header.
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::to_string)
 }
 
 /// Parse the auth token or return a failed stage-in record
@@ -212,17 +207,16 @@ async fn record_error(
 
 async fn process_stage_in(
     store: &SharedStore,
+    claims: &JwtClaims,
+    raw_token: &str,
     request: &StageInRequest,
 ) -> (StatusCode, StageInResponse) {
     tracing::debug!("process_stage_in called");
     let request_id = Uuid::new_v4();
 
-    let user_sub = match validate_token_jwt(&request.token, &request_id, store).await {
-        Err(error_record) => {
-            return (StatusCode::UNAUTHORIZED, error_record.into());
-        }
-        Ok(sub) => sub,
-    };
+    // The JWT has already been validated by the `Claims` extractor; the `sub`
+    // claim identifies the authenticated user.
+    let user_sub = claims.sub.clone();
 
     let dids: Vec<DidParse> = match validate_dids(request, &request_id, &user_sub, store).await {
         Err(error_record) => {
@@ -231,8 +225,8 @@ async fn process_stage_in(
         Ok(result) => result,
     };
 
-    let api_tokens = match validate_auth_token(&request.token, &request_id, &user_sub, store).await
-    {
+    // Exchange the validated bearer token for SRCNet API access tokens.
+    let api_tokens = match validate_auth_token(raw_token, &request_id, &user_sub, store).await {
         Err(error_record) => {
             return (StatusCode::UNAUTHORIZED, error_record.into());
         }
@@ -317,20 +311,42 @@ async fn process_stage_out(_request: &StageOutRequest) -> StageOutResponse {
 
 /// POST /stage-in — initiate async data staging into scratch.
 async fn stage_in(
-    Extension(store): Extension<SharedStore>,
+    Claims { claims, .. }: Claims<JwtClaims>,
+    State(store): State<SharedStore>,
+    headers: HeaderMap,
     Json(body): Json<StageInRequest>,
 ) -> (StatusCode, Json<StageInResponse>) {
-    tracing::info!("stage-in | dids=[{}]", body.dids.join(","));
+    tracing::info!(user = %claims.sub, "stage-in | dids=[{}]", body.dids.join(","));
 
-    let (status, response) = process_stage_in(&store, &body).await;
+    // The `Claims` extractor has already validated the token; we only need its
+    // raw string form to exchange for SRCNet API access tokens.
+    let raw_token = match bearer_token(&headers) {
+        Some(token) => token,
+        None => {
+            let request_id = Uuid::new_v4();
+            let record = record_error(
+                &request_id,
+                &claims.sub,
+                "missing or malformed Authorization bearer token".into(),
+                &store,
+            )
+            .await;
+            return (StatusCode::UNAUTHORIZED, Json(record.into()));
+        }
+    };
+
+    let (status, response) = process_stage_in(&store, &claims, &raw_token, &body).await;
     (status, Json(response))
 }
 
 /// GET /stage-in/{request_id} — poll the status of an async stage-in request.
 async fn get_stage_in_status(
-    Extension(store): Extension<SharedStore>,
+    Claims { claims, .. }: Claims<JwtClaims>,
+    State(store): State<SharedStore>,
     Path(request_id): Path<Uuid>,
 ) -> (StatusCode, Json<StageInResponse>) {
+    tracing::info!(user = %claims.sub, request_id = %request_id, "get stage-in status");
+    let _ = claims;
     match store.get(&request_id).await {
         Ok(Some(record)) => {
             let response = record.into();
@@ -362,8 +378,12 @@ async fn get_stage_in_status(
 }
 
 /// POST /stage-out — signal payload completion and trigger stage-out.
-async fn stage_out(Json(body): Json<StageOutRequest>) -> Json<StageOutResponse> {
+async fn stage_out(
+    Claims { claims, .. }: Claims<JwtClaims>,
+    Json(body): Json<StageOutRequest>,
+) -> Json<StageOutResponse> {
     tracing::info!(
+        user = %claims.sub,
         "stage-out | data={} scratch={} request={}",
         body.data,
         body.scratch_space,
@@ -378,19 +398,29 @@ async fn stage_out(Json(body): Json<StageOutRequest>) -> Json<StageOutResponse> 
 // Server setup
 // ---------------------------------------------------------------------------
 
+/// Application state shared across all request handlers.
+///
+/// Carries both the shared store and the JWT decoder that backs the
+/// `Claims<JwtClaims>` extractor (via `FromRef`).
+#[derive(Clone, FromRef)]
+pub struct AppState {
+    pub store: SharedStore,
+    pub decoder: Decoder<JwtClaims>,
+}
+
 /// Build the router with all battle-API endpoints.
-pub fn build_router(store: SharedStore) -> Router {
+pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/stage-in", post(stage_in))
         .route("/stage-in/{request_id}", get(get_stage_in_status))
         .route("/stage-out", post(stage_out))
-        .layer(Extension(store)) // in-memory stateful store
+        .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
 
 /// Start the HTTP server and block.
-pub async fn run_server(addr: SocketAddr, store: SharedStore) -> Result<(), anyhow::Error> {
-    let app = build_router(store);
+pub async fn run_server(addr: SocketAddr, state: AppState) -> Result<(), anyhow::Error> {
+    let app = build_router(state);
 
     tracing::info!("HTTP server listening on {}", addr);
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;

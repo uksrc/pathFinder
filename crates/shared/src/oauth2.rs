@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-const AUTHN_BASE_URL: &str = "https://authn.srcnet.skao.int/api/v1";
-const DATA_MANAGEMENT: &str = "data-management-api";
-const SITE_CAPABILITIES: &str = "site-capabilities-api";
+pub const AUTHN_BASE_URL: &str = "https://authn.srcnet.skao.int/api/v1";
+pub const DATA_MANAGEMENT: &str = "data-management-api";
+pub const SITE_CAPABILITIES: &str = "site-capabilities-api";
 
 /// API access tokens for the Data Management and Site Capabilities APIs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,7 +291,7 @@ fn parse_error_response(error_data: &TokenResponse) -> Option<String> {
 
 /// Exchanges the OIDC auth token for an API-specific access token via
 /// `GET /token/exchange/<api_name>`.
-async fn exchange_token_for_api_token(
+pub async fn exchange_token_for_api_token(
     client: &Client,
     base_url: &str,
     auth_token: &str,
