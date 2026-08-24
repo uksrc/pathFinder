@@ -2370,6 +2370,7 @@ dependencies = [
  "itertools 0.15.0",
  "pathfinder-shared",
  "serde",
+ "sqlx",
  "tokio",
  "tower-http",
  "tracing",

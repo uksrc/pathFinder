@@ -1,4 +1,5 @@
 /// Module containing the functions (etc.) required to use an on-disk SQLite store
+use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{
@@ -28,8 +29,10 @@ async fn create_pool(db_path: &str) -> anyhow::Result<SqlitePool> {
 #[derive(Debug, Clone, Serialize, sqlx::Type, Deserialize)]
 #[sqlx(type_name = "TEXT")]
 pub enum RecordState {
-    Started,
-    Finished,
+    StagingIn,
+    StagingOut,
+    StagedIn,
+    StagedOut,
     Failed,
 }
 
@@ -46,6 +49,7 @@ pub struct StageInRecord {
     pub input_path: Option<String>,
     pub output_path: Option<String>,
     pub work_path: Option<String>,
+    pub dids: Json<Vec<String>>,
     pub message: Option<String>,
 }
 
@@ -57,8 +61,8 @@ pub struct RequestStoreRow {
     pub input_path: Option<String>,
     pub output_path: Option<String>,
     pub work_path: Option<String>,
-    pub dids_mounted: Json<Option<Vec<String>>>,
-    pub dids_requested: Json<Option<Vec<String>>>,
+    pub dids_mounted: Json<Vec<String>>,
+    pub dids_requested: Json<Vec<String>>,
     pub status: RecordState,
     pub message: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -73,6 +77,7 @@ impl RequestStoreRow {
             input_path: self.input_path.clone(),
             output_path: self.output_path.clone(),
             work_path: self.work_path.clone(),
+            dids: self.dids_requested.clone(),
             message: self.message.clone(),
         }
     }
@@ -87,8 +92,8 @@ impl From<&StageInRecord> for RequestStoreRow {
             input_path: record.input_path.clone(),
             output_path: record.output_path.clone(),
             work_path: record.work_path.clone(),
-            dids_mounted: Json(None),
-            dids_requested: Json(None),
+            dids_mounted: Json(Vec::<String>::default()),
+            dids_requested: Json(record.dids.to_vec()),
             status: record.state.clone(),
             message: record.message.clone(),
             created_at: now_utc,
@@ -146,6 +151,7 @@ impl SharedStore {
             input_path: None,
             output_path: None,
             work_path: None,
+            dids: Json(dids.clone()),
             message: None,
         });
 
@@ -209,7 +215,7 @@ impl SharedStore {
     pub async fn add_did_mounted(&self, request_id: &Uuid, did: &str) -> anyhow::Result<()> {
         // Read current list, append, write back
         if let Some(row) = self.get(request_id).await? {
-            let mut mounted: Vec<String> = row.dids_mounted.0.unwrap_or_default();
+            let mut mounted: Vec<String> = row.dids_mounted.to_vec();
             mounted.push(did.to_string());
             self.update_dids_mounted(request_id, mounted).await?;
         }
@@ -251,15 +257,31 @@ impl SharedStore {
         self.touch_updated_at(request_id).await
     }
 
+    pub async fn add_to_message(
+        &self,
+        request_id: &Uuid,
+        new_message: String,
+    ) -> anyhow::Result<()> {
+        let record = self
+            .get(request_id)
+            .await
+            .context("cannot find record to add message")?
+            .ok_or_else(|| anyhow!("error querying store for record"))?;
+
+        let new_message = format!("{}/{}", record.message.unwrap_or_default(), new_message);
+        self.update_message(request_id, new_message).await
+    }
+
     pub async fn fail_stale_requests(&self) -> anyhow::Result<u64> {
         let now = chrono::Utc::now();
         let result = sqlx::query(
-            "UPDATE request_store SET status = ?, message = ?, updated_at = ? WHERE status = ?",
+            "UPDATE request_store SET status = ?, message = ?, updated_at = ? WHERE status = ? OR status = ?",
         )
         .bind(RecordState::Failed.to_string())
         .bind("pathfinder service restart invalidated request")
         .bind(now)
-        .bind(RecordState::Started.to_string())
+        .bind(RecordState::StagingIn.to_string())
+        .bind(RecordState::StagingOut.to_string())
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())

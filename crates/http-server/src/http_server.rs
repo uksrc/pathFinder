@@ -9,6 +9,7 @@ use axum_jwt_auth::{Claims, Decoder};
 use futures::future::join_all;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use sqlx::types::Json as SqlxJson;
 use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -184,6 +185,7 @@ async fn record_error(
         input_path: None,
         output_path: None,
         work_path: None,
+        dids: SqlxJson(Vec::<String>::default()),
         message: Some(error_msg),
     };
     if let Err(err) = store
@@ -236,10 +238,11 @@ async fn process_stage_in(
     let parent_path = "/home/ska_service_user"; // TODO: Read from config file
     let record = StageInRecord {
         request_id: request_id.clone(),
-        state: RecordState::Started,
+        state: RecordState::StagingIn,
         input_path: Some(format!("{}/{}/data", parent_path, request_id)),
         output_path: Some(format!("{}/{}/project", parent_path, request_id)),
         work_path: Some(format!("{}/{}/scratch", parent_path, request_id)),
+        dids: SqlxJson(request.dids.clone()),
         message: None,
     };
 
@@ -249,7 +252,7 @@ async fn process_stage_in(
             &user_sub,
             Some(record.clone()),
             Some(request.dids.clone()),
-            &RecordState::Started,
+            &RecordState::StagedIn,
         )
         .await
     {
@@ -272,16 +275,40 @@ async fn process_stage_in(
                 Err(err) => {
                     tracing::error!("mount task panicked: {}", err);
                     let _ = store.update_status(&request_id, &RecordState::Failed).await;
-                    let _ = store.update_message(&request_id, err.to_string()).await;
+                    let _ = store.add_to_message(&request_id, err.to_string()).await;
                 }
                 Ok(Err(err)) => {
                     tracing::error!("run_spawn failed: {}", err);
                     let _ = store.update_status(&request_id, &RecordState::Failed).await;
-                    let _ = store.update_message(&request_id, err.to_string()).await;
+                    let _ = store.add_to_message(&request_id, err.to_string()).await;
                 }
                 Ok(Ok(())) => {
                     if let Err(err) = store.add_did_mounted(&request_id, &did_str).await {
-                        tracing::error!("failed to record mounted DID: {}", err);
+                        let message = format!("failed to record mounted DID: {}", err);
+                        tracing::error!(message);
+                        let _ = store.update_status(&request_id, &RecordState::Failed).await;
+                        let _ = store.add_to_message(&request_id, message).await;
+                    } else {
+                        // Check if all dids_requested are now in dids_mounted - if so, set status to StagedIn
+                        let store_result = match store.get(&request_id).await {
+                          Ok(result ) => result,
+                          Err(err) => {
+                            tracing::error!("failed to retrieve current record - {}", err);
+                            return
+                          }
+                        };
+                        match store_result {
+                          Some(mut record) => {
+                            if record.dids_mounted.sort() == record.dids_requested.sort() {
+                              // Mark the stage-in as completed!
+                              let _ = store.update_status(&request_id, &RecordState::StagedIn).await;
+                            };
+                          },
+                          None => {
+                            tracing::error!("no record matching request ID {}", request_id);
+                            return
+                          }
+                        };
                     }
                 }
             }
