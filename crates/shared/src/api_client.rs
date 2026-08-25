@@ -69,13 +69,14 @@ impl PathFinderApiClient for ApiClient {
         tracing::debug!("Checking namespace '{}' is available", namespace);
         let namespaces = self.get_all_namespaces()?;
         if !namespaces.contains(&namespace.to_string()) {
-            anyhow::bail!(
-                "Namespace '{}' not found in available namespaces: {:?}",
+            tracing::error!(
+                "Namespace '{}' not found - available namespaces: {:?}",
                 namespace,
                 namespaces
             );
+            anyhow::bail!("Namespace '{}' does not exist", namespace);
         }
-        tracing::debug!("Namespace available.");
+        tracing::debug!("Namespace {} found.", namespace);
         Ok(())
     }
 
