@@ -203,9 +203,57 @@ async fn record_error(
     err_record
 }
 
-// ---------------------------------------------------------------------------`
-// Stub handler: actual stage-in logic (called by POST /stage-in)
-// ---------------------------------------------------------------------------
+/// Mount a single DID on a blocking thread and update the store on completion.
+async fn mount_did(store: SharedStore, request_id: Uuid, did: DidParse, api_tokens: Tokens) {
+    let did_str = format!("{}:{}", did.namespace, did.filename);
+    let result =
+        tokio::task::spawn_blocking(move || run_spawn(&did.namespace, &did.filename, &api_tokens))
+            .await;
+
+    match result {
+        Err(err) => {
+            tracing::error!("mount task panicked: {}", err);
+            let _ = store.update_status(&request_id, &RecordState::Failed).await;
+            let _ = store.add_to_message(&request_id, err.to_string()).await;
+        }
+        Ok(Err(err)) => {
+            tracing::error!("run_spawn failed: {}", err);
+            let _ = store.update_status(&request_id, &RecordState::Failed).await;
+            let _ = store.add_to_message(&request_id, err.to_string()).await;
+        }
+        Ok(Ok(())) => {
+            if let Err(err) = store.add_did_mounted(&request_id, &did_str).await {
+                let message = format!("failed to record mounted DID: {}", err);
+                tracing::error!(message);
+                let _ = store.update_status(&request_id, &RecordState::Failed).await;
+                let _ = store.add_to_message(&request_id, message).await;
+            } else {
+                // Check if all dids_requested are now in dids_mounted - if so, set status to StagedIn
+                let store_result = match store.get(&request_id).await {
+                    Ok(result) => result,
+                    Err(err) => {
+                        tracing::error!("failed to retrieve current record - {}", err);
+                        return;
+                    }
+                };
+                match store_result {
+                    Some(mut record) => {
+                        if record.dids_mounted.sort() == record.dids_requested.sort() {
+                            // Mark the stage-in as completed!
+                            let _ = store
+                                .update_status(&request_id, &RecordState::StagedIn)
+                                .await;
+                        };
+                    }
+                    None => {
+                        tracing::error!("no record matching request ID {}", request_id);
+                        return;
+                    }
+                };
+            }
+        }
+    }
+}
 
 async fn process_stage_in(
     store: &SharedStore,
@@ -264,55 +312,7 @@ async fn process_stage_in(
     for did in dids {
         let store = store.clone();
         let api_tokens = api_tokens.clone();
-        let did_str = format!("{}:{}", did.namespace, did.filename);
-        tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                run_spawn(&did.namespace, &did.filename, &api_tokens)
-            })
-            .await;
-
-            match result {
-                Err(err) => {
-                    tracing::error!("mount task panicked: {}", err);
-                    let _ = store.update_status(&request_id, &RecordState::Failed).await;
-                    let _ = store.add_to_message(&request_id, err.to_string()).await;
-                }
-                Ok(Err(err)) => {
-                    tracing::error!("run_spawn failed: {}", err);
-                    let _ = store.update_status(&request_id, &RecordState::Failed).await;
-                    let _ = store.add_to_message(&request_id, err.to_string()).await;
-                }
-                Ok(Ok(())) => {
-                    if let Err(err) = store.add_did_mounted(&request_id, &did_str).await {
-                        let message = format!("failed to record mounted DID: {}", err);
-                        tracing::error!(message);
-                        let _ = store.update_status(&request_id, &RecordState::Failed).await;
-                        let _ = store.add_to_message(&request_id, message).await;
-                    } else {
-                        // Check if all dids_requested are now in dids_mounted - if so, set status to StagedIn
-                        let store_result = match store.get(&request_id).await {
-                          Ok(result ) => result,
-                          Err(err) => {
-                            tracing::error!("failed to retrieve current record - {}", err);
-                            return
-                          }
-                        };
-                        match store_result {
-                          Some(mut record) => {
-                            if record.dids_mounted.sort() == record.dids_requested.sort() {
-                              // Mark the stage-in as completed!
-                              let _ = store.update_status(&request_id, &RecordState::StagedIn).await;
-                            };
-                          },
-                          None => {
-                            tracing::error!("no record matching request ID {}", request_id);
-                            return
-                          }
-                        };
-                    }
-                }
-            }
-        });
+        tokio::spawn(mount_did(store, request_id, did, api_tokens));
     }
 
     // Return immediately with 202 Accepted (async operation started)
