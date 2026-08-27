@@ -28,12 +28,13 @@ use pathfinder_shared::{
 #[derive(Debug, Deserialize)]
 pub struct StageInRequest {
     dids: Vec<String>,
+    project_name: Path,
 }
 
 #[derive(Debug, Serialize)]
 pub struct StageInResponse {
     request_id: Uuid,
-    state: String,
+    state: RecordState,
     #[serde(skip_serializing_if = "Option::is_none")]
     input_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,7 +49,7 @@ impl From<StageInRecord> for StageInResponse {
     fn from(record: StageInRecord) -> Self {
         StageInResponse {
             request_id: record.request_id,
-            state: format!("{:?}", record.state),
+            state: record.state,
             input_path: record.input_path,
             output_path: record.output_path,
             work_path: record.work_path,
@@ -62,7 +63,7 @@ impl From<pathfinder_shared::store::RequestStoreRow> for StageInResponse {
         let record = row.to_stage_in_record();
         StageInResponse {
             request_id: record.request_id,
-            state: format!("{:?}", record.state),
+            state: record.state,
             input_path: record.input_path,
             output_path: record.output_path,
             work_path: record.work_path,
@@ -73,19 +74,53 @@ impl From<pathfinder_shared::store::RequestStoreRow> for StageInResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct StageOutRequest {
-    data: String,
-    scratch_space: String,
-    request_id: String,
+    request_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
 pub struct StageOutResponse {
-    acknowledged: bool,
-    audit_ref: String,
+    request_id: Uuid,
+    state: RecordState,
+    message: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
-// DID parsing
+// Store manipulation functions
+// ---------------------------------------------------------------------------
+
+/// Record an error record
+async fn record_error(
+    request_id: &Uuid,
+    user_sub: &str,
+    error_msg: String,
+    store: &SharedStore,
+) -> StageInRecord {
+    let err_record = StageInRecord {
+        request_id: request_id.clone(),
+        state: RecordState::Failed,
+        input_path: None,
+        output_path: None,
+        work_path: None,
+        dids: SqlxJson(Vec::<String>::default()),
+        message: Some(error_msg),
+    };
+    if let Err(err) = store
+        .initialise_request_record(
+            request_id,
+            &user_sub.to_string(),
+            Some(err_record.clone()),
+            None,
+            &RecordState::Failed,
+        )
+        .await
+    {
+        tracing::error!("failed to record error: {}", err);
+    }
+    err_record
+}
+
+// ---------------------------------------------------------------------------
+// DID processing
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -149,60 +184,6 @@ async fn validate_dids(
     }
 }
 
-/// Extract the raw bearer token from the `Authorization: Bearer <token>` header.
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::to_string)
-}
-
-/// Parse the auth token or return a failed stage-in record
-async fn validate_auth_token(
-    auth_token: &str,
-    request_id: &Uuid,
-    user_sub: &str,
-    store: &SharedStore,
-) -> Result<Tokens, StageInRecord> {
-    match async_obtain_api_tokens(&auth_token.to_string()).await {
-        Ok(tokens) => Ok(tokens),
-        Err(error) => Err(record_error(request_id, user_sub, error.to_string(), store).await),
-    }
-}
-
-/// Record an error record
-async fn record_error(
-    request_id: &Uuid,
-    user_sub: &str,
-    error_msg: String,
-    store: &SharedStore,
-) -> StageInRecord {
-    let err_record = StageInRecord {
-        request_id: request_id.clone(),
-        state: RecordState::Failed,
-        input_path: None,
-        output_path: None,
-        work_path: None,
-        dids: SqlxJson(Vec::<String>::default()),
-        message: Some(error_msg),
-    };
-    if let Err(err) = store
-        .initialise_request_record(
-            request_id,
-            &user_sub.to_string(),
-            Some(err_record.clone()),
-            None,
-            &RecordState::Failed,
-        )
-        .await
-    {
-        tracing::error!("failed to record error: {}", err);
-    }
-    err_record
-}
-
 /// Mount a single DID on a blocking thread and update the store on completion.
 async fn mount_did(store: SharedStore, request_id: Uuid, did: DidParse, api_tokens: Tokens) {
     let did_str = format!("{}:{}", did.namespace, did.filename);
@@ -254,6 +235,57 @@ async fn mount_did(store: SharedStore, request_id: Uuid, did: DidParse, api_toke
         }
     }
 }
+
+async fn unmount_did(
+    store: SharedStore,
+    request_id: Uuid,
+    unparsed_did: String,
+    base_path: String,
+) {
+    let did = match parse_did(&unparsed_did) {
+        Ok(result) => result,
+        Err(err) => {
+            // set record to failed and add a message
+            return;
+        }
+    };
+    // call the pathfinder function to unmount the file
+    let result = tokio::task::spawn_blocking(move || {
+        spawned_unmount_data(&base_path, &did.namespace, &did.filename)
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// Auth token processing
+// ---------------------------------------------------------------------------
+
+/// Parse the auth token or return a failed stage-in record
+async fn validate_auth_token(
+    auth_token: &str,
+    request_id: &Uuid,
+    user_sub: &str,
+    store: &SharedStore,
+) -> Result<Tokens, StageInRecord> {
+    match async_obtain_api_tokens(&auth_token.to_string()).await {
+        Ok(tokens) => Ok(tokens),
+        Err(error) => Err(record_error(request_id, user_sub, error.to_string(), store).await),
+    }
+}
+
+/// Extract the raw bearer token from the `Authorization: Bearer <token>` header.
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::to_string)
+}
+
+// ---------------------------------------------------------------------------
+/// Stage in and stage out processing functions
+// ---------------------------------------------------------------------------
 
 async fn process_stage_in(
     store: &SharedStore,
@@ -373,7 +405,6 @@ async fn get_stage_in_status(
     Path(request_id): Path<Uuid>,
 ) -> (StatusCode, Json<StageInResponse>) {
     tracing::info!(user = %claims.sub, request_id = %request_id, "get stage-in status");
-    let _ = claims;
     match store.get(&request_id).await {
         Ok(Some(record)) => {
             let response = record.into();
@@ -382,7 +413,7 @@ async fn get_stage_in_status(
         Ok(None) => {
             let response = StageInResponse {
                 request_id: request_id.clone(),
-                state: "NOT_FOUND".into(),
+                state: RecordState::Unknown,
                 input_path: None,
                 output_path: None,
                 work_path: None,
@@ -393,7 +424,7 @@ async fn get_stage_in_status(
         Err(err) => {
             let response = StageInResponse {
                 request_id: request_id.clone(),
-                state: "NOT_FOUND".into(),
+                state: RecordState::Unknown,
                 input_path: None,
                 output_path: None,
                 work_path: None,

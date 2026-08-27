@@ -34,6 +34,7 @@ pub enum RecordState {
     StagedIn,
     StagedOut,
     Failed,
+    Unknown,
 }
 
 impl std::fmt::Display for RecordState {
@@ -47,7 +48,7 @@ pub struct StageInRecord {
     pub request_id: Uuid,
     pub state: RecordState,
     pub input_path: Option<String>,
-    pub output_path: Option<String>,
+    pub output_path: Option<String>,  // TODO: Consider project path?  It could have input data after all!
     pub work_path: Option<String>,
     pub dids: Json<Vec<String>>,
     pub message: Option<String>,
