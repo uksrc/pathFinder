@@ -26,17 +26,18 @@ async fn main() -> Result<()> {
     if args.unmount {
         let sudo_user = env::var("SUDO_USER").context("SUDO_USER not set")?;
 
-        let fits_path = format!("/{}/{}", args.namespace, args.file_name);
-        mount::unmount_operation(&fits_path, &args.namespace, &sudo_user)?;
+        let base_path = format!("/home/{}", sudo_user);
+        mount::unmount_operation(&base_path, &args.namespace, &args.file_name)?;
         return Ok(());
     }
 
     // Mount operation requires authentication and API calls.
     //
     // Three modes:
-    //   * no --token            → interactive OAuth2 device-code flow
     //   * --token <TOKEN>       → validate TOKEN against JWKS and exchange it
     //   * --token               → use PATHFINDER_SKA_AUTH_TOKEN env var
+    //   * no --token            → fall back to PATHFINDER_SKA_AUTH_TOKEN env var
+    //   * neither               → interactive OAuth2 device-code flow
     let tokens = match resolve_auth_token(&args)? {
         Some(token) => {
             // Validate the token against the OIDC JWKS and extract the caller identity.

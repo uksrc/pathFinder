@@ -9,7 +9,7 @@
 //!   hint otherwise.
 //! * [`resolve_auth_token`] — determines the bearer token to use, either from
 //!   `--token`, the `PATHFINDER_SKA_AUTH_TOKEN` environment variable, or an
-//!   error if neither is set.
+//!   interactive OAuth2 device-code flow if neither is set.
 
 use anyhow::Result;
 use clap::Parser;
@@ -34,9 +34,9 @@ pub struct Args {
     /// against the OIDC JWKS and then exchanged for the Data Management and
     /// Site Capabilities API tokens.
     ///
-    /// If omitted, the interactive OAuth2 device-code flow is used. If
-    /// provided without a value, the `PATHFINDER_SKA_AUTH_TOKEN` environment
-    /// variable is used.
+    /// If omitted or provided without a value, the `PATHFINDER_SKA_AUTH_TOKEN`
+    /// environment variable is used. If that is also unset, the interactive
+    /// OAuth2 device-code flow is used.
     #[arg(long, num_args = 0..=1, default_missing_value = "")]
     pub token: Option<String>,
 
@@ -112,26 +112,20 @@ pub const AUTH_TOKEN_ENV_VAR: &str = "PATHFINDER_SKA_AUTH_TOKEN";
 /// Resolves the bearer token to use for authentication.
 ///
 /// * `--token <TOKEN>` → returns `Ok(Some(TOKEN))`.
-/// * `--token` with no value → looks at the `PATHFINDER_SKA_AUTH_TOKEN`
-///   environment variable. If it is set and non-empty, returns
-///   `Ok(Some(token))`; otherwise returns an error explaining how to supply
-///   the token.
-/// * No `--token` flag at all → returns `Ok(None)`, signalling the caller to
-///   use the interactive OAuth2 device-code flow.
+/// * `--token` with no value, or no `--token` flag at all → looks at the
+///   `PATHFINDER_SKA_AUTH_TOKEN` environment variable. If it is set and
+///   non-empty, returns `Ok(Some(token))`.
+/// * Neither a command-line token nor the environment variable is set →
+///   returns `Ok(None)`, signalling the caller to use the interactive OAuth2
+///   device-code flow.
 pub fn resolve_auth_token(args: &Args) -> Result<Option<String>> {
-    match args.token.as_deref() {
-        Some(token) if !token.is_empty() => Ok(Some(token.to_string())),
-        Some(_) => match env::var(AUTH_TOKEN_ENV_VAR) {
-            Ok(token) if !token.is_empty() => Ok(Some(token)),
-            _ => {
-                eprintln!("\nError: --token was provided without a value, but PATHFINDER_SKA_AUTH_TOKEN is not set.");
-                eprintln!("Provide a token on the command line with:");
-                eprintln!("  --token <TOKEN>");
-                eprintln!("Or set the PATHFINDER_SKA_AUTH_TOKEN environment variable.");
-                anyhow::bail!("missing authentication token")
-            }
-        },
-        None => Ok(None),
+    if let Some(token) = args.token.as_deref().filter(|t| !t.is_empty()) {
+        return Ok(Some(token.to_string()));
+    }
+
+    match env::var(AUTH_TOKEN_ENV_VAR) {
+        Ok(token) if !token.is_empty() => Ok(Some(token)),
+        _ => Ok(None),
     }
 }
 
@@ -240,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_auth_token_ignores_empty_command_line_token() {
+    fn resolve_auth_token_falls_back_to_env_on_empty_token_arg() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         env::set_var(AUTH_TOKEN_ENV_VAR, "env-token");
 
