@@ -15,10 +15,7 @@ use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use pathfinder_shared::{
-    jwt::JwtClaims,
-    oauth2::{async_obtain_api_tokens, Tokens},
-    path_finder::run_spawn,
-    store::{RecordState, SharedStore, StageInRecord},
+    jwt::JwtClaims, oauth2::{Tokens, async_obtain_api_tokens}, path_finder::{run, spawned_run, spawned_unmount_data}, store::{RecordState, SharedStore, StageInRecord},
 };
 
 // ---------------------------------------------------------------------------
@@ -185,11 +182,15 @@ async fn validate_dids(
 }
 
 /// Mount a single DID on a blocking thread and update the store on completion.
-async fn mount_did(store: SharedStore, request_id: Uuid, did: DidParse, api_tokens: Tokens) {
+async fn mount_did(store: SharedStore, request_id: Uuid, did: DidParse, api_tokens: Tokens, base_path: &str) {
     let did_str = format!("{}:{}", did.namespace, did.filename);
-    let result =
-        tokio::task::spawn_blocking(move || run_spawn(&did.namespace, &did.filename, &api_tokens))
-            .await;
+    let base_path = base_path.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        run(&did.namespace, &did.filename, &base_path, &api_tokens, |code| {
+            eprintln!("mount process exited with code {}", code);
+        })
+    })
+    .await;
 
     match result {
         Err(err) => {
@@ -320,7 +321,10 @@ async fn process_stage_in(
         request_id: request_id.clone(),
         state: RecordState::StagingIn,
         input_path: Some(format!("{}/{}/data", parent_path, request_id)),
-        output_path: Some(format!("{}/{}/project", parent_path, request_id)),
+        output_path: Some(format!(
+            "{}/{}/project/{}",
+            parent_path, request_id, project_name
+        )),
         work_path: Some(format!("{}/{}/scratch", parent_path, request_id)),
         dids: SqlxJson(request.dids.clone()),
         message: None,
@@ -339,28 +343,59 @@ async fn process_stage_in(
         tracing::error!("failed to initialise request record: {}", err);
     }
 
-    // Spawn one async task per DID — each runs its mount on a blocking thread
-    // and updates the store on failure. The handler returns 202 immediately.
-    for did in dids {
-        let store = store.clone();
-        let api_tokens = api_tokens.clone();
-        tokio::spawn(mount_did(store, request_id, did, api_tokens));
-    }
+    // Spawn a single async task that iterates over DIDs and launches a
+    // per-DID mount task for each. The handler can then return a 202 immediately.
+    let store = store.clone();
+    tokio::spawn(async move {
+        for did in dids {
+            let store = store.clone();
+            let api_tokens = api_tokens.clone();
+            tokio::spawn(mount_did(store, request_id, did, api_tokens));
+        }
+    });
 
     // Return immediately with 202 Accepted (async operation started)
     (StatusCode::ACCEPTED, record.into())
 }
 
-// ---------------------------------------------------------------------------
-// Stub handler: actual stage-out logic (called by POST /stage-out)
-// ---------------------------------------------------------------------------
-
-async fn process_stage_out(_request: &StageOutRequest) -> StageOutResponse {
-    let audit_ref = format!("audit-{}", Uuid::new_v4().simple());
-
-    StageOutResponse {
-        acknowledged: true,
-        audit_ref,
+async fn process_stage_out(
+    store: &SharedStore,
+    claim: JwtClaims,
+    request: &StageOutRequest,
+) -> StageOutResponse {
+    // Get record from store
+    match store.get_for_user(&request.request_id, &claim.sub).await {
+        Ok(Some(record)) => {
+            let store = store.clone();
+            let request_id = request.request_id.clone();
+            // For each did in the record, unmount
+            tokio::spawn(async move {
+                // parse the dids into a Vec<DidParse>
+                for did in record.dids_mounted.into_inner() {
+                    tokio::spawn(unmount_did(store.clone(), request_id.clone(), did));
+                }
+            });
+            StageOutResponse {
+                request_id: request_id,
+                state: RecordState::StagingOut,
+                message: None,
+            }
+        }
+        Ok(None) => StageOutResponse {
+            request_id: request.request_id.clone(),
+            state: RecordState::Unknown,
+            message: Some(
+                "Request not found in pathfinder store on this node for this user".to_string(),
+            ),
+        },
+        Err(err) => StageOutResponse {
+            request_id: request.request_id.clone(),
+            state: RecordState::Unknown,
+            message: Some(format!(
+                "Error retrieving request from pathfinder store: {}",
+                err
+            )),
+        },
     }
 }
 
@@ -438,17 +473,16 @@ async fn get_stage_in_status(
 /// POST /stage-out — signal payload completion and trigger stage-out.
 async fn stage_out(
     Claims { claims, .. }: Claims<JwtClaims>,
+    State(store): State<SharedStore>,
     Json(body): Json<StageOutRequest>,
 ) -> Json<StageOutResponse> {
     tracing::info!(
         user = %claims.sub,
-        "stage-out | data={} scratch={} request={}",
-        body.data,
-        body.scratch_space,
+        "stage-out | request={}",
         body.request_id
     );
 
-    let response = process_stage_out(&body).await;
+    let response = process_stage_out(&store, claims, &body).await;
     Json(response)
 }
 

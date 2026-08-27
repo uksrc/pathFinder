@@ -15,9 +15,11 @@ use crate::api_client::{ApiClient, PathFinderApiClient};
 use crate::models::{DataLocation, StorageAreaIDToNodeAndSite};
 use crate::oauth2::Tokens;
 
+// TODO: combine mount and spawned_mount: they're not that different - only the exit_fn
+
 /// Production wrapper: constructs an [`ApiClient`] from the supplied tokens and
-/// delegates to [`run_impl`] with the real path-finder helpers and [`do_exit`].
-pub fn run(namespace: &str, file_name: &str, tokens: &Tokens) -> Result<()> {
+/// delegates to [`mount_impl`] with the real path-finder helpers and [`do_exit`].
+pub fn run(namespace: &str, file_name: &str, base_path: &str, tokens: &Tokens, exit_fn: impl Fn(i32)) -> Result<()> {
     let client = ApiClient::new(
         tokens.data_management_token.clone(),
         tokens.site_capabilities_token.clone(),
@@ -25,40 +27,13 @@ pub fn run(namespace: &str, file_name: &str, tokens: &Tokens) -> Result<()> {
     run_impl(
         namespace,
         file_name,
+        base_path,
         &client,
         print_data_locations_with_sites,
         extract_rse_path,
         check_local_file_exists,
         mount_data,
-        do_exit,
-    )
-}
-
-/// Wraps [`std::process::exit`] so that [`run_impl`] can accept an injectable
-/// `Fn(i32)` rather than calling `process::exit` directly, keeping the
-/// orchestration logic unit-testable without spawning a subprocess.
-fn do_exit(code: i32) {
-    std::process::exit(code);
-}
-
-/// Production wrapper: constructs an [`ApiClient`] from the supplied tokens and
-/// delegates to [`run_impl`] with the real path-finder helpers and [`do_exit`].
-pub fn run_spawn(namespace: &str, file_name: &str, tokens: &Tokens) -> Result<()> {
-    let client = ApiClient::new(
-        tokens.data_management_token.clone(),
-        tokens.site_capabilities_token.clone(),
-    );
-    run_impl(
-        namespace,
-        file_name,
-        &client,
-        print_data_locations_with_sites,
-        extract_rse_path,
-        check_local_file_exists,
-        mount_data,
-        |code| {
-            eprintln!("run exited with code {}", code);
-        },
+        exit_fn,
     )
 }
 
@@ -79,15 +54,16 @@ pub fn run_spawn(namespace: &str, file_name: &str, tokens: &Tokens) -> Result<()
 /// * `file_exists`     — returns `true` when the file is present under `/skadata`.
 /// * `mount`           — performs the OS-level bind mount.
 /// * `exit_fn`         — called with `1` when the file is not locally staged.
-///                       In production this is [`do_exit`], which does not return.
+///                       In production, the CLI uses [`do_exit`].
 fn run_impl(
     namespace: &str,
     file_name: &str,
+    base_path: &str,
     client: &dyn PathFinderApiClient,
     print_locations: impl Fn(&StorageAreaIDToNodeAndSite, &[DataLocation]),
     extract_path: impl Fn(&[DataLocation], &str, &str) -> Result<String>,
     file_exists: impl Fn(&str) -> bool,
-    mount: impl Fn(&str, &str) -> Result<()>,
+    mount_fn: impl Fn(&str, &str, &str) -> Result<()>,
     exit_fn: impl Fn(i32),
 ) -> Result<()> {
     client.check_namespace_available(namespace)?;
@@ -111,7 +87,7 @@ fn run_impl(
         return Ok(()); // unreachable in production (used for testing when exist_fn is mocked)
     }
 
-    mount(&rse_path, namespace)?;
+    mount_fn(&rse_path, namespace, base_path)?;
 
     Ok(())
 }
@@ -235,13 +211,14 @@ pub fn extract_rse_path(
 /// [`crate::mount::mount_operation`].
 ///
 /// Prints progress messages to stdout before and after the mount syscall.
-pub fn mount_data(rse_path: &str, namespace: &str) -> Result<()> {
+pub fn mount_data(rse_path: &str, namespace: &str, base_path: &str) -> Result<()> {
     let sudo_user = env::var("SUDO_USER").context("SUDO_USER not set")?;
     mount_data_impl(
         rse_path,
         namespace,
         &sudo_user,
-        crate::mount::mount_operation,
+        base_path,
+        crate::mount::mount_data_operation,
     )
 }
 
@@ -258,10 +235,54 @@ fn mount_data_impl(
     rse_path: &str,
     namespace: &str,
     sudo_user: &str,
-    mount_fn: impl Fn(&str, &str, &str) -> Result<()>,
+    base_path: &str,
+    mount_fn: impl Fn(&str, &str, &str, &str) -> Result<()>,
 ) -> Result<()> {
-    mount_fn(rse_path, namespace, sudo_user)
+    mount_fn(rse_path, namespace, sudo_user, base_path)
 }
+
+/// Unmounts the data file at `rse_path` from the invoking user's home directory.
+///
+/// Reads `SUDO_USER` from the environment (set by `sudo`; guaranteed to be
+/// present after [`crate::cli::check_privileges`] succeeds) and delegates to
+/// [`crate::mount::unmount_operation`].
+pub fn unmount_data(rse_path: &str, namespace: &str) -> Result<()> {
+    let sudo_user = env::var("SUDO_USER").context("SUDO_USER not set")?;
+    unmount_data_impl(
+        rse_path,
+        namespace,
+        &sudo_user,
+        crate::mount::unmount_operation,
+    )
+}
+
+pub fn spawned_unmount_data(base_path: &str, namespace: &str, filename: &str) -> Result<()> {
+    crate::mount::unmount_operation(base_path, namespace, filename)
+}
+
+/// Inner implementation of [`unmount_data`] with an injectable `unmount_fn` and
+/// `sudo_user`, so the code can be tested without performing a real OS unmount.
+///
+/// * `rse_path`    — the `/<namespace>/…` path on the RSE (used to derive the filename).
+/// * `namespace`   — the data namespace.
+/// * `sudo_user`   — the original (non-root) user on whose behalf to unmount.
+/// * `unmount_fn`  — called as `unmount_fn(base_path, namespace, file_name)`; in
+///   production this is [`crate::mount::unmount_operation`].
+fn unmount_data_impl(
+    rse_path: &str,
+    namespace: &str,
+    sudo_user: &str,
+    unmount_fn: impl Fn(&str, &str, &str) -> Result<()>,
+) -> Result<()> {
+    let file_name = Path::new(rse_path)
+        .file_name()
+        .context("Invalid RSE path: no filename")?
+        .to_str()
+        .context("Invalid UTF-8 in filename")?;
+    let base_path = format!("/home/{}", sudo_user);
+    unmount_fn(&base_path, namespace, file_name)
+}
+
 #[cfg(test)]
 mod tests {
 
