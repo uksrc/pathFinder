@@ -128,6 +128,20 @@ impl SharedStore {
         Ok(entry)
     }
 
+    pub async fn get_for_user(&self, request_id: &Uuid, user_sub: &String) -> anyhow::Result<Option<RequestStoreRow>> {
+      let entry = sqlx::query_as::<_, RequestStoreRow>(
+            r#"SELECT *
+               FROM request_store
+               WHERE request_id = ?
+               AND user_sub = ?"#,
+        )
+        .bind(request_id.to_string())
+        .bind(user_sub)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(entry)
+    }
+
     pub async fn exists(&self, request_id: &Uuid) -> anyhow::Result<bool> {
         let row: (bool,) =
             sqlx::query_as("SELECT EXISTS(SELECT 1 FROM request_store WHERE request_id = ?)")
