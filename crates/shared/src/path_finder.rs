@@ -18,7 +18,7 @@ use crate::oauth2::Tokens;
 // TODO: combine mount and spawned_mount: they're not that different - only the exit_fn
 
 /// Production wrapper: constructs an [`ApiClient`] from the supplied tokens and
-/// delegates to [`mount_impl`] with the real path-finder helpers and [`do_exit`].
+/// delegates to [`run_impl`] with the real path-finder helpers and [`do_exit`].
 pub fn run(
     namespace: &str,
     file_name: &str,

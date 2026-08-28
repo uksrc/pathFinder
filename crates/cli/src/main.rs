@@ -5,13 +5,9 @@ use clap::Parser;
 use pathfinder_shared::{
     jwks_auth::RemoteJwksAuth,
     mount,
-    oauth2::{
-        authenticate, exchange_token_for_api_token, Tokens, AUTHN_BASE_URL, DATA_MANAGEMENT,
-        SITE_CAPABILITIES,
-    },
+    oauth2::{authenticate, exchange_token_for_api_tokens, Tokens},
     path_finder::run,
 };
-use reqwest::Client;
 use std::env;
 
 use cli::{check_privileges, resolve_auth_token, Args};
@@ -90,23 +86,4 @@ async fn get_api_tokens(args: &Args) -> Result<Tokens> {
 /// fn rather than calling `process::exit` directly, keeping the logic testable.
 fn do_exit(code: i32) {
     std::process::exit(code);
-}
-
-/// Exchanges the validated OIDC bearer token for Data Management and Site
-/// Capabilities API tokens via [`exchange_token_for_api_token`].
-async fn exchange_token_for_api_tokens(auth_token: &str) -> Result<Tokens> {
-    let client = Client::new();
-    let dm_token =
-        exchange_token_for_api_token(&client, AUTHN_BASE_URL, auth_token, DATA_MANAGEMENT)
-            .await
-            .context("failed to exchange token for Data Management API")?;
-    let sc_token =
-        exchange_token_for_api_token(&client, AUTHN_BASE_URL, auth_token, SITE_CAPABILITIES)
-            .await
-            .context("failed to exchange token for Site Capabilities API")?;
-
-    Ok(Tokens {
-        data_management_token: dm_token,
-        site_capabilities_token: sc_token,
-    })
 }

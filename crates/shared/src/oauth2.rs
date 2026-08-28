@@ -326,6 +326,25 @@ pub async fn exchange_token_for_api_token(
     }
 }
 
+/// Exchanges the validated OIDC bearer token for Data Management and Site
+/// Capabilities API tokens via [`exchange_token_for_api_token`].
+pub async fn exchange_token_for_api_tokens(auth_token: &str) -> Result<Tokens> {
+    let client = Client::new();
+    let dm_token =
+        exchange_token_for_api_token(&client, AUTHN_BASE_URL, auth_token, DATA_MANAGEMENT)
+            .await
+            .context("failed to exchange token for Data Management API")?;
+    let sc_token =
+        exchange_token_for_api_token(&client, AUTHN_BASE_URL, auth_token, SITE_CAPABILITIES)
+            .await
+            .context("failed to exchange token for Site Capabilities API")?;
+
+    Ok(Tokens {
+        data_management_token: dm_token,
+        site_capabilities_token: sc_token,
+    })
+}
+
 /// Returns the path to the on-disk token cache file, creating intermediate directories if needed.
 fn get_token_cache_path() -> Result<PathBuf> {
     let config_dir = dirs::config_dir()
