@@ -17,7 +17,7 @@ use uuid::Uuid;
 use pathfinder_shared::{
     jwt::JwtClaims,
     oauth2::{async_obtain_api_tokens, Tokens},
-    path_finder::{run, spawned_run, spawned_unmount_data},
+    path_finder::{run, spawned_unmount_data},
     store::{RecordState, SharedStore, StageInRecord},
 };
 
@@ -28,7 +28,7 @@ use pathfinder_shared::{
 #[derive(Debug, Deserialize)]
 pub struct StageInRequest {
     dids: Vec<String>,
-    project_name: Path,
+    project_name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,10 +190,9 @@ async fn mount_did(
     request_id: Uuid,
     did: DidParse,
     api_tokens: Tokens,
-    base_path: &str,
+    base_path: String,
 ) {
     let did_str = format!("{}:{}", did.namespace, did.filename);
-    let base_path = base_path.to_string();
     let result = tokio::task::spawn_blocking(move || {
         run(
             &did.namespace,
@@ -252,24 +251,33 @@ async fn mount_did(
     }
 }
 
-async fn unmount_did(
-    store: SharedStore,
-    request_id: Uuid,
-    unparsed_did: String,
-    base_path: String,
-) {
-    let did = match parse_did(&unparsed_did) {
-        Ok(result) => result,
-        Err(err) => {
-            // set record to failed and add a message
-            return;
-        }
-    };
-    // call the pathfinder function to unmount the file
+async fn unmount_did(store: SharedStore, request_id: Uuid, did: DidParse, base_path: String) {
+    let did_str = format!("{}:{}", did.namespace, did.filename);
     let result = tokio::task::spawn_blocking(move || {
         spawned_unmount_data(&base_path, &did.namespace, &did.filename)
     })
     .await;
+
+    match result {
+        Err(err) => {
+            tracing::error!("unmount task panicked: {}", err);
+            let _ = store.update_status(&request_id, &RecordState::Failed).await;
+            let _ = store.add_to_message(&request_id, err.to_string()).await;
+        }
+        Ok(Err(err)) => {
+            tracing::error!("spawned_unmount_data failed: {}", err);
+            let _ = store.update_status(&request_id, &RecordState::Failed).await;
+            let _ = store.add_to_message(&request_id, err.to_string()).await;
+        }
+        Ok(Ok(())) => {
+            if let Err(err) = store.remove_did_mounted(&request_id, &did_str).await {
+                let message = format!("failed to record unmounted DID: {}", err);
+                tracing::error!(message);
+                let _ = store.update_status(&request_id, &RecordState::Failed).await;
+                let _ = store.add_to_message(&request_id, message).await;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +346,7 @@ async fn process_stage_in(
         input_path: Some(format!("{}/{}/data", parent_path, request_id)),
         output_path: Some(format!(
             "{}/{}/project/{}",
-            parent_path, request_id, project_name
+            parent_path, request_id, request.project_name
         )),
         work_path: Some(format!("{}/{}/scratch", parent_path, request_id)),
         dids: SqlxJson(request.dids.clone()),
@@ -362,10 +370,17 @@ async fn process_stage_in(
     // per-DID mount task for each. The handler can then return a 202 immediately.
     let store = store.clone();
     tokio::spawn(async move {
+        let input_path = format!("{}/{}/data", parent_path, request_id);
         for did in dids {
             let store = store.clone();
             let api_tokens = api_tokens.clone();
-            tokio::spawn(mount_did(store, request_id, did, api_tokens));
+            tokio::spawn(mount_did(
+                store,
+                request_id,
+                did,
+                api_tokens,
+                input_path.clone(),
+            ));
         }
     });
 
@@ -380,29 +395,6 @@ async fn process_stage_out(
 ) -> StageOutResponse {
     // Get record from store
     match store.get_for_user(&request.request_id, &claim.sub).await {
-        Ok(Some(record)) => {
-            let store = store.clone();
-            let request_id = request.request_id.clone();
-            // For each did in the record, unmount
-            tokio::spawn(async move {
-                // parse the dids into a Vec<DidParse>
-                for did in record.dids_mounted.into_inner() {
-                    tokio::spawn(unmount_did(store.clone(), request_id.clone(), did));
-                }
-            });
-            StageOutResponse {
-                request_id: request_id,
-                state: RecordState::StagingOut,
-                message: None,
-            }
-        }
-        Ok(None) => StageOutResponse {
-            request_id: request.request_id.clone(),
-            state: RecordState::Unknown,
-            message: Some(
-                "Request not found in pathfinder store on this node for this user".to_string(),
-            ),
-        },
         Err(err) => StageOutResponse {
             request_id: request.request_id.clone(),
             state: RecordState::Unknown,
@@ -411,6 +403,55 @@ async fn process_stage_out(
                 err
             )),
         },
+        Ok(None) => StageOutResponse {
+            request_id: request.request_id.clone(),
+            state: RecordState::Unknown,
+            message: Some(
+                "Request not found in pathfinder store on this node for this user".to_string(),
+            ),
+        },
+        Ok(Some(record)) => {
+            let store = store.clone();
+            let request_id = request.request_id.clone();
+            match record.input_path {
+                None => StageOutResponse {
+                    request_id: request_id,
+                    state: RecordState::Failed,
+                    message: Some(format!(
+                        "Record doesn't have an input path set: id={}",
+                        request_id
+                    )),
+                },
+                Some(input_path) => {
+                    // For each did in the record, unmount
+                    tokio::spawn(async move {
+                        for did_str in record.dids_mounted.into_inner() {
+                            match parse_did(&did_str) {
+                                Ok(did) => {
+                                    tokio::spawn(unmount_did(
+                                        store.clone(),
+                                        request_id.clone(),
+                                        did,
+                                        input_path.clone(),
+                                    ));
+                                }
+                                Err(unparsed) => {
+                                    tracing::error!(
+                                        "cannot parse mounted DID for unmount: {}",
+                                        unparsed
+                                    );
+                                }
+                            }
+                        }
+                    });
+                    StageOutResponse {
+                        request_id: request_id,
+                        state: RecordState::StagingOut,
+                        message: None,
+                    }
+                }
+            }
+        }
     }
 }
 

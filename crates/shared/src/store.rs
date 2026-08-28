@@ -241,6 +241,16 @@ impl SharedStore {
         Ok(())
     }
 
+    /// Remove a single DID from the mounted list for a given request.
+    pub async fn remove_did_mounted(&self, request_id: &Uuid, did: &str) -> anyhow::Result<()> {
+        if let Some(row) = self.get(request_id).await? {
+            let mut mounted: Vec<String> = row.dids_mounted.to_vec();
+            mounted.retain(|m| m != did);
+            self.update_dids_mounted(request_id, mounted).await?;
+        }
+        Ok(())
+    }
+
     pub async fn update_dids_requested(
         &self,
         request_id: &Uuid,
