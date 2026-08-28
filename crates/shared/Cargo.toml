@@ -18,6 +18,7 @@ jsonwebtoken_10 = { package = "jsonwebtoken", version = "10.3" }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 jsonwebtoken = "11.0.0"
+libc = "0.2"
 regex = "1.10"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 serde = { version = "1.0", features = ["derive"] }

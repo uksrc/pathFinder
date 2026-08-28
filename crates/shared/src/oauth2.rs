@@ -574,8 +574,8 @@ mod tests {
 
     // --- initiate_device_code_flow ---
 
-    #[test]
-    fn initiate_device_code_flow_parses_success_response() {
+    #[tokio::test]
+    async fn initiate_device_code_flow_parses_success_response() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/login/device");
@@ -590,14 +590,16 @@ mod tests {
         });
 
         let client = Client::new();
-        let resp = initiate_device_code_flow(&client, &server.base_url()).unwrap();
+        let resp = initiate_device_code_flow(&client, &server.base_url())
+            .await
+            .unwrap();
         assert_eq!(resp.device_code, "dev-code-abc");
         assert_eq!(resp.user_code, "ABCD-1234");
         assert_eq!(resp.interval, 5);
     }
 
-    #[test]
-    fn initiate_device_code_flow_uses_default_interval_when_absent() {
+    #[tokio::test]
+    async fn initiate_device_code_flow_uses_default_interval_when_absent() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/login/device");
@@ -611,12 +613,14 @@ mod tests {
         });
 
         let client = Client::new();
-        let resp = initiate_device_code_flow(&client, &server.base_url()).unwrap();
+        let resp = initiate_device_code_flow(&client, &server.base_url())
+            .await
+            .unwrap();
         assert_eq!(resp.interval, 5);
     }
 
-    #[test]
-    fn initiate_device_code_flow_propagates_http_error() {
+    #[tokio::test]
+    async fn initiate_device_code_flow_propagates_http_error() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/login/device");
@@ -624,7 +628,9 @@ mod tests {
         });
 
         let client = Client::new();
-        let err = initiate_device_code_flow(&client, &server.base_url()).unwrap_err();
+        let err = initiate_device_code_flow(&client, &server.base_url())
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("Device code flow request failed"),
             "{err}"
@@ -633,8 +639,8 @@ mod tests {
 
     // --- poll_for_authentication ---
 
-    #[test]
-    fn poll_returns_nested_token_on_success() {
+    #[tokio::test]
+    async fn poll_returns_nested_token_on_success() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/token");
@@ -643,12 +649,14 @@ mod tests {
         });
 
         let client = Client::new();
-        let token = poll_for_authentication(&client, &server.base_url(), "dev-code", 0).unwrap();
+        let token = poll_for_authentication(&client, &server.base_url(), "dev-code", 0)
+            .await
+            .unwrap();
         assert_eq!(token, "oidc-token-abc");
     }
 
-    #[test]
-    fn poll_returns_flat_access_token_on_success() {
+    #[tokio::test]
+    async fn poll_returns_flat_access_token_on_success() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/token");
@@ -657,12 +665,14 @@ mod tests {
         });
 
         let client = Client::new();
-        let token = poll_for_authentication(&client, &server.base_url(), "dev-code", 0).unwrap();
+        let token = poll_for_authentication(&client, &server.base_url(), "dev-code", 0)
+            .await
+            .unwrap();
         assert_eq!(token, "oidc-token-flat");
     }
 
-    #[test]
-    fn poll_errors_on_expired_token() {
+    #[tokio::test]
+    async fn poll_errors_on_expired_token() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/token");
@@ -670,12 +680,14 @@ mod tests {
         });
 
         let client = Client::new();
-        let err = poll_for_authentication(&client, &server.base_url(), "dev-code", 0).unwrap_err();
+        let err = poll_for_authentication(&client, &server.base_url(), "dev-code", 0)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("expired"), "{err}");
     }
 
-    #[test]
-    fn poll_errors_on_access_denied() {
+    #[tokio::test]
+    async fn poll_errors_on_access_denied() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/token");
@@ -683,14 +695,16 @@ mod tests {
         });
 
         let client = Client::new();
-        let err = poll_for_authentication(&client, &server.base_url(), "dev-code", 0).unwrap_err();
+        let err = poll_for_authentication(&client, &server.base_url(), "dev-code", 0)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("denied"), "{err}");
     }
 
     // --- exchange_token_for_api_token ---
 
-    #[test]
-    fn exchange_token_returns_nested_token() {
+    #[tokio::test]
+    async fn exchange_token_returns_nested_token() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/token/exchange/data-management-api");
@@ -705,12 +719,13 @@ mod tests {
             "oidc-token",
             "data-management-api",
         )
+        .await
         .unwrap();
         assert_eq!(token, "dm-token-abc");
     }
 
-    #[test]
-    fn exchange_token_returns_flat_access_token() {
+    #[tokio::test]
+    async fn exchange_token_returns_flat_access_token() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET)
@@ -726,12 +741,13 @@ mod tests {
             "oidc-token",
             "site-capabilities-api",
         )
+        .await
         .unwrap();
         assert_eq!(token, "sc-token-flat");
     }
 
-    #[test]
-    fn exchange_token_propagates_http_error() {
+    #[tokio::test]
+    async fn exchange_token_propagates_http_error() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/token/exchange/data-management-api");
@@ -745,12 +761,13 @@ mod tests {
             "oidc-token",
             "data-management-api",
         )
+        .await
         .unwrap_err();
-        assert!(err.to_string().contains("Token exchange failed"), "{err}");
+        assert!(err.to_string().contains("401 Unauthorized"), "{err}");
     }
 
-    #[test]
-    fn exchange_token_errors_when_no_token_in_response() {
+    #[tokio::test]
+    async fn exchange_token_errors_when_no_token_in_response() {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/token/exchange/data-management-api");
@@ -764,6 +781,7 @@ mod tests {
             "oidc-token",
             "data-management-api",
         )
+        .await
         .unwrap_err();
         assert!(err.to_string().contains("No access token"), "{err}");
     }

@@ -243,7 +243,7 @@ mod tests {
         let err = client_for(&dm, &sc)
             .check_namespace_available("daac")
             .unwrap_err();
-        assert!(err.to_string().contains("not found"), "{err}");
+        assert!(err.to_string().contains("does not exist"), "{err}");
     }
 
     // --- site_storage_areas ---

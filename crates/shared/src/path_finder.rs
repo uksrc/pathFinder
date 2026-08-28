@@ -425,12 +425,13 @@ mod tests {
         let print_count = Cell::new(0u32);
         let extract_called_with: RefCell<Option<(String, String)>> = RefCell::new(None);
         let file_exists_called_with: RefCell<Option<String>> = RefCell::new(None);
-        let mount_called_with: RefCell<Option<(String, String)>> = RefCell::new(None);
+        let mount_called_with: RefCell<Option<(String, String, String)>> = RefCell::new(None);
         let exit_called = Cell::new(false);
 
         run_impl(
             NS,
             FILE,
+            "/home/alice",
             &client,
             |_, _| {
                 print_count.set(print_count.get() + 1);
@@ -443,8 +444,9 @@ mod tests {
                 *file_exists_called_with.borrow_mut() = Some(rse.to_string());
                 true
             },
-            |rse, ns| {
-                *mount_called_with.borrow_mut() = Some((rse.to_string(), ns.to_string()));
+            |rse, ns, base| {
+                *mount_called_with.borrow_mut() =
+                    Some((rse.to_string(), ns.to_string(), base.to_string()));
                 Ok(())
             },
             |_| exit_called.set(true),
@@ -481,8 +483,12 @@ mod tests {
         );
         assert_eq!(
             *mount_called_with.borrow(),
-            Some((RSE_PATH.to_string(), NS.to_string())),
-            "mount should be called with the extracted RSE path and namespace"
+            Some((
+                RSE_PATH.to_string(),
+                NS.to_string(),
+                "/home/alice".to_string()
+            )),
+            "mount should be called with the extracted RSE path, namespace, and base_path"
         );
         assert!(
             !exit_called.get(),
@@ -499,11 +505,12 @@ mod tests {
         run_impl(
             NS,
             FILE,
+            "/home/alice",
             &client,
             |_, _| {},
             |_, _, _| Ok(RSE_PATH.to_string()),
             |_| false, // file not present locally
-            |_, _| {
+            |_, _, _| {
                 mount_called.set(true);
                 Ok(())
             },
@@ -526,11 +533,12 @@ mod tests {
         run_impl(
             NS,
             FILE,
+            "/home/alice",
             &client,
             |_, _| print_count.set(print_count.get() + 1),
             |_, _, _| Ok(RSE_PATH.to_string()),
             |_| false,
-            |_, _| Ok(()),
+            |_, _, _| Ok(()),
             |_| {},
         )
         .unwrap();
@@ -552,11 +560,12 @@ mod tests {
         let err = run_impl(
             NS,
             FILE,
+            "/home/alice",
             &client,
             |_, _| {},
             |_, _, _| unreachable!("extract_path must not be called"),
             |_| unreachable!("file_exists must not be called"),
-            |_, _| unreachable!("mount must not be called"),
+            |_, _, _| unreachable!("mount must not be called"),
             |_| unreachable!("exit_fn must not be called"),
         )
         .unwrap_err();
@@ -581,11 +590,12 @@ mod tests {
         let err = run_impl(
             NS,
             FILE,
+            "/home/alice",
             &client,
             |_, _| {},
             |_, _, _| unreachable!("extract_path must not be called"),
             |_| unreachable!("file_exists must not be called"),
-            |_, _| unreachable!("mount must not be called"),
+            |_, _, _| unreachable!("mount must not be called"),
             |_| unreachable!("exit_fn must not be called"),
         )
         .unwrap_err();
@@ -603,11 +613,12 @@ mod tests {
         let err = run_impl(
             NS,
             FILE,
+            "/home/alice",
             &client,
             |_, _| {},
             |_, _, _| anyhow::bail!("no matching replica paths"),
             |_| unreachable!("file_exists must not be called"),
-            |_, _| unreachable!("mount must not be called"),
+            |_, _, _| unreachable!("mount must not be called"),
             |_| unreachable!("exit_fn must not be called"),
         )
         .unwrap_err();
@@ -625,11 +636,12 @@ mod tests {
         let err = run_impl(
             NS,
             FILE,
+            "/home/alice",
             &client,
             |_, _| {},
             |_, _, _| Ok(RSE_PATH.to_string()),
             |_| true, // file exists
-            |_, _| anyhow::bail!("bindfs: permission denied"),
+            |_, _, _| anyhow::bail!("bindfs: permission denied"),
             |_| unreachable!("exit_fn must not be called"),
         )
         .unwrap_err();
@@ -797,26 +809,40 @@ mod tests {
         use std::cell::Cell;
 
         let called = Cell::new(false);
-        let mock_mount = |rse: &str, ns: &str, user: &str| -> Result<()> {
+        let mock_mount = |rse: &str, ns: &str, user: &str, base: &str| -> Result<()> {
             assert_eq!(rse, "/ska:ns/data.fits");
             assert_eq!(ns, "ska:ns");
             assert_eq!(user, "alice");
+            assert_eq!(base, "/home/alice");
             called.set(true);
             Ok(())
         };
 
-        mount_data_impl("/ska:ns/data.fits", "ska:ns", "alice", mock_mount).unwrap();
+        mount_data_impl(
+            "/ska:ns/data.fits",
+            "ska:ns",
+            "alice",
+            "/home/alice",
+            mock_mount,
+        )
+        .unwrap();
         assert!(called.get(), "mount_fn was never called");
     }
 
     #[test]
     fn mount_data_impl_propagates_mount_fn_error() {
-        let failing_mount = |_: &str, _: &str, _: &str| -> Result<()> {
+        let failing_mount = |_: &str, _: &str, _: &str, _: &str| -> Result<()> {
             anyhow::bail!("bindfs failed");
         };
 
-        let err =
-            mount_data_impl("/ska:ns/data.fits", "ska:ns", "alice", failing_mount).unwrap_err();
+        let err = mount_data_impl(
+            "/ska:ns/data.fits",
+            "ska:ns",
+            "alice",
+            "/home/alice",
+            failing_mount,
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("bindfs failed"),
             "unexpected error: {err}"
@@ -828,7 +854,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         env::remove_var("SUDO_USER");
 
-        let err = mount_data("/ska:ns/data.fits", "ska:ns").unwrap_err();
+        let err = mount_data("/ska:ns/data.fits", "ska:ns", "/home/alice").unwrap_err();
         assert!(
             err.to_string().contains("SUDO_USER"),
             "unexpected error: {err}"

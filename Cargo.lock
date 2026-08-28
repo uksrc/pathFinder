@@ -2390,6 +2390,7 @@ dependencies = [
  "httpmock",
  "jsonwebtoken 10.4.0",
  "jsonwebtoken 11.0.0",
+ "libc",
  "regex",
  "reqwest 0.12.28",
  "serde",

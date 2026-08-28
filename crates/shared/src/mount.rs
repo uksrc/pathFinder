@@ -83,7 +83,16 @@ impl Runner for SystemRunner {
 /// # Example
 ///
 /// ```no_run
-/// mount_operation("/daac/08/06/2022-01-01_12-00-00.fits", "daac", "jsmith")?;
+/// use pathfinder_shared::mount::mount_data_operation;
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     mount_data_operation(
+///         "/daac/08/06/2022-01-01_12-00-00.fits",
+///         "daac",
+///         "jsmith",
+///         "/home/jsmith",
+///     )?;
+///     Ok(())
+/// }
 /// ```
 pub fn mount_data_operation(
     data_path: &str,
@@ -410,11 +419,17 @@ mod tests {
     fn mount_errors_when_skadata_does_not_exist() {
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata"); // intentionally not created
-        let home = tmp.path().join("home");
+        let home = tmp.path().join("home").join(USER);
 
-        let err =
-            mount_data_operation_impl(DATA_PATH, NAMESPACE, USER, &skadata, &home, &SystemRunner)
-                .unwrap_err();
+        let err = mount_data_operation_impl(
+            DATA_PATH,
+            NAMESPACE,
+            USER,
+            home.to_str().unwrap(),
+            &skadata,
+            &SystemRunner,
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("does not exist"), "{msg}");
         assert!(msg.contains("RSE"), "{msg}");
@@ -427,11 +442,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata");
         fs::create_dir_all(&skadata).unwrap(); // skadata exists but file is absent
-        let home = tmp.path().join("home");
+        let home = tmp.path().join("home").join(USER);
 
-        let err =
-            mount_data_operation_impl(DATA_PATH, NAMESPACE, USER, &skadata, &home, &SystemRunner)
-                .unwrap_err();
+        let err = mount_data_operation_impl(
+            DATA_PATH,
+            NAMESPACE,
+            USER,
+            home.to_str().unwrap(),
+            &skadata,
+            &SystemRunner,
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("random10MiB.bin"), "{msg}");
         assert!(msg.contains("not found") || msg.contains("staged"), "{msg}");
@@ -443,14 +464,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata");
         fs::create_dir_all(&skadata).unwrap();
-        let home = tmp.path().join("home");
+        let home = tmp.path().join("home").join(USER);
 
         let err = mount_data_operation_impl(
             "/daac/08/06/random10MiB.bin",
             NAMESPACE,
             USER,
+            home.to_str().unwrap(),
             &skadata,
-            &home,
             &SystemRunner,
         )
         .unwrap_err();
@@ -465,11 +486,18 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata");
         fs::create_dir_all(&skadata).unwrap();
-        let home = tmp.path().join("home");
+        let home = tmp.path().join("home").join(USER);
 
         // A path of "/" has no file_name component
-        let err = mount_data_operation_impl("/", NAMESPACE, USER, &skadata, &home, &SystemRunner)
-            .unwrap_err();
+        let err = mount_data_operation_impl(
+            "/",
+            NAMESPACE,
+            USER,
+            home.to_str().unwrap(),
+            &skadata,
+            &SystemRunner,
+        )
+        .unwrap_err();
         assert!(err.to_string().to_lowercase().contains("invalid"), "{err}");
     }
 
@@ -478,10 +506,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata");
         fs::create_dir_all(&skadata).unwrap();
-        let home = tmp.path().join("home");
+        let home = tmp.path().join("home").join(USER);
 
-        let err = mount_data_operation_impl("", NAMESPACE, USER, &skadata, &home, &SystemRunner)
-            .unwrap_err();
+        let err = mount_data_operation_impl(
+            "",
+            NAMESPACE,
+            USER,
+            home.to_str().unwrap(),
+            &skadata,
+            &SystemRunner,
+        )
+        .unwrap_err();
         // An empty string has no file_name
         assert!(err.to_string().to_lowercase().contains("invalid"), "{err}");
     }
@@ -493,25 +528,20 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata");
         seed_skadata(&skadata);
-        let home = tmp.path().join("home");
+        let home = tmp.path().join("home").join(USER);
 
         mount_data_operation_impl(
             DATA_PATH,
             NAMESPACE,
             USER,
+            home.to_str().unwrap(),
             &skadata,
-            &home,
             &MockRunner::new(),
         )
         .unwrap();
 
-        let bind_dir = home
-            .join(USER)
-            .join(".binds")
-            .join(NAMESPACE)
-            .join("random10MiB");
+        let bind_dir = home.join(".binds").join(NAMESPACE).join("random10MiB");
         let projects_file = home
-            .join(USER)
             .join("projects")
             .join(NAMESPACE)
             .join("random10MiB.bin");
@@ -531,7 +561,7 @@ mod tests {
     fn mount_second_file_in_same_namespace_succeeds() {
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata");
-        let home = tmp.path().join("home");
+        let home = tmp.path().join("home").join(USER);
 
         // Seed two different files under the same skadata directory / namespace.
         let data_dir = skadata.join("daac/08/06");
@@ -544,19 +574,15 @@ mod tests {
             "/daac/08/06/random10MiB.bin",
             NAMESPACE,
             USER,
+            home.to_str().unwrap(),
             &skadata,
-            &home,
             &MockRunner::new(),
         )
         .unwrap();
 
         // Simulate the projects_dir placeholder from the first mount being read-only
         // (as it would be after a real `mount --bind`).
-        let first_projects_file = home
-            .join(USER)
-            .join("projects")
-            .join(NAMESPACE)
-            .join("random10MiB.bin");
+        let first_projects_file = home.join("projects").join(NAMESPACE).join("random10MiB.bin");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -570,8 +596,8 @@ mod tests {
             "/daac/08/06/other100MiB.bin",
             NAMESPACE,
             USER,
+            home.to_str().unwrap(),
             &skadata,
-            &home,
             &MockRunner::new(),
         )
         .unwrap();
@@ -770,24 +796,20 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata");
         seed_skadata(&skadata);
-        let home = tmp.path().join("home");
+        let home = tmp.path().join("home").join(TestUser::NAME);
 
         mount_data_operation_impl(
             DATA_PATH,
             NAMESPACE,
             TestUser::NAME,
+            home.to_str().unwrap(),
             &skadata,
-            &home,
             &CapturingRealChownRunner::new(),
         )
         .unwrap();
 
-        let bind_dir = home
-            .join(TestUser::NAME)
-            .join(".binds")
-            .join(NAMESPACE)
-            .join("random10MiB");
-        let projects_dir = home.join(TestUser::NAME).join("projects").join(NAMESPACE);
+        let bind_dir = home.join(".binds").join(NAMESPACE).join("random10MiB");
+        let projects_dir = home.join("projects").join(NAMESPACE);
 
         #[cfg(unix)]
         {
@@ -829,20 +851,19 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let skadata = tmp.path().join("skadata");
         seed_skadata(&skadata);
-        let home = tmp.path().join("home");
+        let home = tmp.path().join("home").join(TestUser::NAME);
 
         mount_data_operation_impl(
             DATA_PATH,
             NAMESPACE,
             TestUser::NAME,
+            home.to_str().unwrap(),
             &skadata,
-            &home,
             &CapturingRealChownRunner::new(),
         )
         .unwrap();
 
         let projects_file = home
-            .join(TestUser::NAME)
             .join("projects")
             .join(NAMESPACE)
             .join("random10MiB.bin");
