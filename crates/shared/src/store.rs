@@ -48,7 +48,7 @@ pub struct StageInRecord {
     pub request_id: Uuid,
     pub state: RecordState,
     pub input_path: Option<String>,
-    pub output_path: Option<String>,  // TODO: Consider project path?  It could have input data after all!
+    pub output_path: Option<String>, // TODO: Consider project path?  It could have input data after all!
     pub work_path: Option<String>,
     pub dids: Json<Vec<String>>,
     pub message: Option<String>,
@@ -128,8 +128,12 @@ impl SharedStore {
         Ok(entry)
     }
 
-    pub async fn get_for_user(&self, request_id: &Uuid, user_sub: &String) -> anyhow::Result<Option<RequestStoreRow>> {
-      let entry = sqlx::query_as::<_, RequestStoreRow>(
+    pub async fn get_for_user(
+        &self,
+        request_id: &Uuid,
+        user_sub: &String,
+    ) -> anyhow::Result<Option<RequestStoreRow>> {
+        let entry = sqlx::query_as::<_, RequestStoreRow>(
             r#"SELECT *
                FROM request_store
                WHERE request_id = ?

@@ -19,7 +19,13 @@ use crate::oauth2::Tokens;
 
 /// Production wrapper: constructs an [`ApiClient`] from the supplied tokens and
 /// delegates to [`mount_impl`] with the real path-finder helpers and [`do_exit`].
-pub fn run(namespace: &str, file_name: &str, base_path: &str, tokens: &Tokens, exit_fn: impl Fn(i32)) -> Result<()> {
+pub fn run(
+    namespace: &str,
+    file_name: &str,
+    base_path: &str,
+    tokens: &Tokens,
+    exit_fn: impl Fn(i32),
+) -> Result<()> {
     let client = ApiClient::new(
         tokens.data_management_token.clone(),
         tokens.site_capabilities_token.clone(),

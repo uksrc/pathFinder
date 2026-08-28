@@ -85,7 +85,12 @@ impl Runner for SystemRunner {
 /// ```no_run
 /// mount_operation("/daac/08/06/2022-01-01_12-00-00.fits", "daac", "jsmith")?;
 /// ```
-pub fn mount_data_operation(data_path: &str, namespace: &str, sudo_user: &str, base_path: &str) -> Result<()> {
+pub fn mount_data_operation(
+    data_path: &str,
+    namespace: &str,
+    sudo_user: &str,
+    base_path: &str,
+) -> Result<()> {
     mount_data_operation_impl(
         data_path,
         namespace,
@@ -407,8 +412,9 @@ mod tests {
         let skadata = tmp.path().join("skadata"); // intentionally not created
         let home = tmp.path().join("home");
 
-        let err = mount_data_operation_impl(DATA_PATH, NAMESPACE, USER, &skadata, &home, &SystemRunner)
-            .unwrap_err();
+        let err =
+            mount_data_operation_impl(DATA_PATH, NAMESPACE, USER, &skadata, &home, &SystemRunner)
+                .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("does not exist"), "{msg}");
         assert!(msg.contains("RSE"), "{msg}");
@@ -423,8 +429,9 @@ mod tests {
         fs::create_dir_all(&skadata).unwrap(); // skadata exists but file is absent
         let home = tmp.path().join("home");
 
-        let err = mount_data_operation_impl(DATA_PATH, NAMESPACE, USER, &skadata, &home, &SystemRunner)
-            .unwrap_err();
+        let err =
+            mount_data_operation_impl(DATA_PATH, NAMESPACE, USER, &skadata, &home, &SystemRunner)
+                .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("random10MiB.bin"), "{msg}");
         assert!(msg.contains("not found") || msg.contains("staged"), "{msg}");
@@ -461,8 +468,8 @@ mod tests {
         let home = tmp.path().join("home");
 
         // A path of "/" has no file_name component
-        let err =
-            mount_data_operation_impl("/", NAMESPACE, USER, &skadata, &home, &SystemRunner).unwrap_err();
+        let err = mount_data_operation_impl("/", NAMESPACE, USER, &skadata, &home, &SystemRunner)
+            .unwrap_err();
         assert!(err.to_string().to_lowercase().contains("invalid"), "{err}");
     }
 
@@ -473,8 +480,8 @@ mod tests {
         fs::create_dir_all(&skadata).unwrap();
         let home = tmp.path().join("home");
 
-        let err =
-            mount_data_operation_impl("", NAMESPACE, USER, &skadata, &home, &SystemRunner).unwrap_err();
+        let err = mount_data_operation_impl("", NAMESPACE, USER, &skadata, &home, &SystemRunner)
+            .unwrap_err();
         // An empty string has no file_name
         assert!(err.to_string().to_lowercase().contains("invalid"), "{err}");
     }

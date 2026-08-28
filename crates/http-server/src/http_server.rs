@@ -15,7 +15,10 @@ use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use pathfinder_shared::{
-    jwt::JwtClaims, oauth2::{Tokens, async_obtain_api_tokens}, path_finder::{run, spawned_run, spawned_unmount_data}, store::{RecordState, SharedStore, StageInRecord},
+    jwt::JwtClaims,
+    oauth2::{async_obtain_api_tokens, Tokens},
+    path_finder::{run, spawned_run, spawned_unmount_data},
+    store::{RecordState, SharedStore, StageInRecord},
 };
 
 // ---------------------------------------------------------------------------
@@ -182,13 +185,25 @@ async fn validate_dids(
 }
 
 /// Mount a single DID on a blocking thread and update the store on completion.
-async fn mount_did(store: SharedStore, request_id: Uuid, did: DidParse, api_tokens: Tokens, base_path: &str) {
+async fn mount_did(
+    store: SharedStore,
+    request_id: Uuid,
+    did: DidParse,
+    api_tokens: Tokens,
+    base_path: &str,
+) {
     let did_str = format!("{}:{}", did.namespace, did.filename);
     let base_path = base_path.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        run(&did.namespace, &did.filename, &base_path, &api_tokens, |code| {
-            eprintln!("mount process exited with code {}", code);
-        })
+        run(
+            &did.namespace,
+            &did.filename,
+            &base_path,
+            &api_tokens,
+            |code| {
+                eprintln!("mount process exited with code {}", code);
+            },
+        )
     })
     .await;
 
