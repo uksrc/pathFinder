@@ -35,6 +35,9 @@ async fn main() -> Result<(), anyhow::Error> {
     let state = AppState {
         store,
         decoder: Arc::new(auth.decoder()),
+        obtain_tokens_fn: http_server::default_obtain_tokens_fn(),
+        mount_fn: http_server::default_mount_fn(),
+        unmount_fn: http_server::default_unmount_fn(),
     };
 
     let addr = ([127, 0, 0, 1], 8765).into();

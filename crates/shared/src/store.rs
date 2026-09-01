@@ -26,7 +26,7 @@ async fn create_pool(db_path: &str) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
-#[derive(Debug, Clone, Serialize, sqlx::Type, Deserialize)]
+#[derive(Debug, Clone, Serialize, sqlx::Type, Deserialize, PartialEq, Eq)]
 #[sqlx(type_name = "TEXT")]
 pub enum RecordState {
     StagingIn,
