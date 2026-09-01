@@ -37,6 +37,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 users = "0.11.0"
 uuid = { version = "1", features = ["v4", "serde"] }
+roxmltree = "0.21.1"
 
 [dev-dependencies]
 httpmock = "0.7"
