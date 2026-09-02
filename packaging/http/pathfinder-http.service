@@ -1,0 +1,17 @@
+[Unit]
+Description=pathfinder HTTP server
+Documentation=https://github.com/uksrc/pathFinder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/pathfinder-http
+ExecStart=/usr/bin/pathfinder-http
+Restart=on-failure
+RestartSec=5
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,9 @@
 mod http_server;
 
+use std::env;
+use std::fs;
+use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -10,6 +14,12 @@ use http_server::{run_server, AppState};
 use pathfinder_shared::jwks_auth::RemoteJwksAuth;
 use pathfinder_shared::store::SharedStore;
 
+/// Default state directory for the daemonised HTTP server.
+const DEFAULT_DB_PATH: &str = "/var/lib/pathfinder-http/pathfinder.db";
+
+/// Default bind address when running as a system daemon.
+const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8765";
+
 ///
 // Run the pathfinder tool in HTTP server mode
 ///
@@ -17,8 +27,12 @@ use pathfinder_shared::store::SharedStore;
 async fn main() -> Result<(), anyhow::Error> {
     configure_logging();
 
-    let db_path = "/Users/roger.duthie/.sqlite/pathfinder.db"; // TODO: Read from a config file
-    let store = SharedStore::new(db_path).await?;
+    let db_path = env::var("PATHFINDER_HTTP_DB_PATH").unwrap_or_else(|_| DEFAULT_DB_PATH.into());
+    if let Some(parent) = Path::new(&db_path).parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create database directory {:?}", parent))?;
+    }
+    let store = SharedStore::new(&db_path).await?;
     store.fail_stale_requests().await?; // Any existing "Started" requests are set to "Failed" on restart
 
     // Build the shared JWKS authenticator: fetch the signing keys now and start
@@ -40,7 +54,11 @@ async fn main() -> Result<(), anyhow::Error> {
         unmount_fn: http_server::default_unmount_fn(),
     };
 
-    let addr = ([127, 0, 0, 1], 8765).into();
+    let listen_addr =
+        env::var("PATHFINDER_HTTP_LISTEN_ADDR").unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.into());
+    let addr: SocketAddr = listen_addr
+        .parse()
+        .with_context(|| format!("invalid PATHFINDER_HTTP_LISTEN_ADDR: {}", listen_addr))?;
 
     run_server(addr, state).await
 }

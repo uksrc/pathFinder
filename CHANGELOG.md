@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI support for the `PATHFINDER_SKA_AUTH_TOKEN` environment variable as a token source.
 - CLI validates the supplied bearer token against the SKA-IAM JWKS and extracts the caller `sub` before exchanging it for Data Management and Site Capabilities API tokens.
 - HTTP server now reuses the shared JWKS authenticator while preserving the `Claims<JwtClaims>` extractor injection.
+- Release packaging for the `pathfinder-http` daemon, including an RPM that installs the binary as a `systemd` service and a default environment file.
+- `pathfinder-http` now reads `PATHFINDER_HTTP_DB_PATH` and `PATHFINDER_HTTP_LISTEN_ADDR` from the environment, with daemon-friendly defaults.
 
 ### Changed
 

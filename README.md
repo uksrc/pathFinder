@@ -66,6 +66,37 @@ Example for unmounting a file:
     $ sudo pathFinder --namespace daac --file-name simple_file.txt --unmount
     Unmounted simple_file.txt from /home/sm2921/projects/daac/simple_file.txt
 
+## HTTP server daemon
+
+The `pathfinder-http` binary runs the pathFinder HTTP API as a `systemd` service.
+It is packaged as an RPM that installs the binary, a systemd unit, and a default
+environment file.
+
+### Install the RPM
+
+    VERSION=2.0.0
+    sudo dnf install https://github.com/uksrc/pathFinder/releases/download/v${VERSION}/pathfinder-http-${VERSION}-1.x86_64.rpm
+
+The install enables and starts the `pathfinder-http` service automatically.
+
+### Configure the daemon
+
+Edit `/etc/default/pathfinder-http` to change the database path or the listen
+address:
+
+    PATHFINDER_HTTP_DB_PATH=/var/lib/pathfinder-http/pathfinder.db
+    PATHFINDER_HTTP_LISTEN_ADDR=0.0.0.0:8765
+
+Then restart the service:
+
+    sudo systemctl restart pathfinder-http
+
+### Service endpoints
+
+- `POST /stage-in` — start an asynchronous stage-in request.
+- `GET /stage-in/{request_id}` — poll the status of a stage-in request.
+- `POST /stage-out` — trigger stage-out for a completed request.
+
 ## Development
 
 Notes on how to build the executable, run the unit and integration tests, and local Docker-based testing can be found in the development can be found in the [DEVELOPMENT.md](DEVELOPMENT.md) doc.
