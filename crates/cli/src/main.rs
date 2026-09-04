@@ -1,0 +1,89 @@
+mod cli;
+
+use anyhow::{Context, Result};
+use clap::Parser;
+use pathfinder_shared::{
+    jwks_auth::RemoteJwksAuth,
+    mount,
+    oauth2::{authenticate, exchange_token_for_api_tokens, Tokens},
+    path_finder::run,
+};
+use std::env;
+
+use cli::{check_privileges, resolve_auth_token, Args};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    check_privileges(&args)?;
+
+    let sudo_user = env::var("SUDO_USER").context("SUDO_USER not set")?;
+    let base_path = format!("/home/{}", sudo_user);
+
+    match args.unmount {
+        true => {
+            // Handle unmount operation (no API calls needed)
+            mount::unmount_operation(&base_path, &args.namespace, &args.file_name)
+        }
+        false => {
+            match get_api_tokens(&args).await {
+                Ok(tokens) => {
+                    // TODO: Add persistent store to the CLI
+                    run(
+                        &args.namespace,
+                        &args.file_name,
+                        &base_path,
+                        &tokens,
+                        do_exit,
+                    )
+                }
+                Err(err) => {
+                    eprintln!("Error resolving API tokens: {}", err);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+}
+
+// Mount operation requires authentication and API calls.
+//
+// Three modes:
+//   * --token <TOKEN>       → validate TOKEN against JWKS and exchange it
+//   * --token               → use PATHFINDER_SKA_AUTH_TOKEN env var
+//   * no --token            → fall back to PATHFINDER_SKA_AUTH_TOKEN env var
+//   * neither               → interactive OAuth2 device-code flow
+async fn get_api_tokens(args: &Args) -> Result<Tokens> {
+    match resolve_auth_token(args)? {
+        Some(token) => {
+            // Validate the token against the OIDC JWKS and extract the caller identity.
+            // The CLI expects a raw JWT without a "Bearer " prefix.
+            let raw_token = token.trim();
+            println!("Validating bearer token against the JWKS...");
+            let auth = RemoteJwksAuth::new().context("failed to build JWKS authenticator")?;
+            auth.initialize()
+                .await
+                .context("failed to fetch JWKS for token validation")?;
+            let claims = auth
+                .authenticate(raw_token)
+                .await
+                .context("provided token failed JWKS validation")?;
+            println!("Authenticated as subject '{}'", claims.sub);
+
+            // Exchange the validated bearer token for the SRCNet API tokens.
+            exchange_token_for_api_tokens(raw_token).await
+        }
+        None => {
+            println!("Authenticating with OAuth2...");
+            let tokens = authenticate(true);
+            tokens
+        }
+    }
+}
+
+/// Wraps [`std::process::exit`] so that [`mount_impl`] can accept an injectable
+/// fn rather than calling `process::exit` directly, keeping the logic testable.
+fn do_exit(code: i32) {
+    std::process::exit(code);
+}
