@@ -103,6 +103,9 @@ impl RemoteJwksAuth {
     pub fn for_url(jwks_url: &str, issuer: &str) -> Result<Self, axum_jwt_auth::Error> {
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[issuer]);
+        // Accept tokens that either omit an `aud` claim or list the SKA authn
+        // API as their intended audience.
+        validation.set_audience(&["authn-api"]);
         let decoder = RemoteJwksDecoder::builder()
             .jwks_url(jwks_url.to_string())
             .validation(validation)
