@@ -582,7 +582,10 @@ mod tests {
 
         // Simulate the projects_dir placeholder from the first mount being read-only
         // (as it would be after a real `mount --bind`).
-        let first_projects_file = home.join("projects").join(NAMESPACE).join("random10MiB.bin");
+        let first_projects_file = home
+            .join("projects")
+            .join(NAMESPACE)
+            .join("random10MiB.bin");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

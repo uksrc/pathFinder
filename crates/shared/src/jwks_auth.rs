@@ -95,12 +95,12 @@ pub struct RemoteJwksAuth {
 impl RemoteJwksAuth {
     /// Builds an authenticator for the default [`JWKS_URL`], enforcing [`ISSUER`].
     pub fn new() -> Result<Self, axum_jwt_auth::Error> {
-        Self::for_url(JWKS_URL, ISSUER)
+        Self::for_url(JWKS_URL)
     }
 
     /// Builds an authenticator for a specific JWKS endpoint and issuer (useful
     /// for tests).
-    pub fn for_url(jwks_url: &str, issuer: &str) -> Result<Self, axum_jwt_auth::Error> {
+    pub fn for_url(jwks_url: &str) -> Result<Self, axum_jwt_auth::Error> {
         let mut validation = Validation::new(Algorithm::RS256);
         validation.validate_aud = false;
         // Accept tokens that either omit an `aud` claim or list the SKA authn
