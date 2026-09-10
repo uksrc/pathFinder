@@ -79,11 +79,6 @@ impl From<pathfinder_shared::store::RequestStoreRow> for StageInResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct StageOutRequest {
-    request_id: Uuid,
-}
-
 #[derive(Debug, Serialize)]
 pub struct StageOutResponse {
     request_id: Uuid,
@@ -450,13 +445,13 @@ async fn process_stage_in_inner(
 async fn process_stage_out(
     store: &SharedStore,
     claim: JwtClaims,
-    request: &StageOutRequest,
+    request_id: &Uuid,
     unmount_fn: UnmountFn,
 ) -> StageOutResponse {
     // Get record from store
-    match store.get_for_user(&request.request_id, &claim.sub).await {
+    match store.get_for_user(request_id, &claim.sub).await {
         Err(err) => StageOutResponse {
-            request_id: request.request_id.clone(),
+            request_id: request_id.clone(),
             state: RecordState::Unknown,
             message: Some(format!(
                 "Error retrieving request from pathfinder store: {}",
@@ -464,7 +459,7 @@ async fn process_stage_out(
             )),
         },
         Ok(None) => StageOutResponse {
-            request_id: request.request_id.clone(),
+            request_id: request_id.clone(),
             state: RecordState::Unknown,
             message: Some(
                 "Request not found in pathfinder store on this node for this user".to_string(),
@@ -472,7 +467,7 @@ async fn process_stage_out(
         },
         Ok(Some(record)) => {
             let store = store.clone();
-            let request_id = request.request_id.clone();
+            let request_id = request_id.clone();
             match record.input_path {
                 None => StageOutResponse {
                     request_id: request_id,
@@ -600,15 +595,15 @@ async fn get_stage_in_status(
 async fn stage_out(
     Claims { claims, .. }: Claims<JwtClaims>,
     State(state): State<AppState>,
-    Json(body): Json<StageOutRequest>,
+    Path(request_id): Path<Uuid>,
 ) -> Json<StageOutResponse> {
     tracing::info!(
         user = %claims.sub,
         "stage-out | request={}",
-        body.request_id
+        request_id
     );
 
-    let response = process_stage_out(&state.store, claims, &body, state.unmount_fn.clone()).await;
+    let response = process_stage_out(&state.store, claims, &request_id, state.unmount_fn.clone()).await;
     Json(response)
 }
 
@@ -638,7 +633,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/stage-in", post(stage_in))
         .route("/stage-in/{request_id}", get(get_stage_in_status))
-        .route("/stage-out", post(stage_out))
+        .route("/stage-out/{request_id}", post(stage_out))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -759,8 +754,8 @@ mod tests {
                 .body(jwks);
         });
         let issuer = "https://test-issuer.example.com/";
-        let auth = RemoteJwksAuth::for_url(&format!("{}/jwks", server.base_url()), issuer).unwrap();
-        auth.initialize().await.unwrap();
+        let auth = RemoteJwksAuth::for_url(&format!("{}/jwks", server.base_url())).unwrap();  // TODO: don't unwrap
+        auth.initialize().await.unwrap();  // TODO: don't unwrap
         (auth, issuer.to_string())
     }
 
@@ -1205,8 +1200,7 @@ mod tests {
             sub: user_sub,
             exp: None,
         };
-        let request = StageOutRequest { request_id };
-        let response = process_stage_out(&store, claim, &request, ok_unmount_fn()).await;
+        let response = process_stage_out(&store, claim, &request_id, ok_unmount_fn()).await;
 
         assert_eq!(response.request_id, request_id);
         assert_eq!(response.state, RecordState::StagingOut);
@@ -1227,8 +1221,7 @@ mod tests {
             sub: "user".into(),
             exp: None,
         };
-        let request = StageOutRequest { request_id };
-        let response = process_stage_out(&store, claim, &request, ok_unmount_fn()).await;
+        let response = process_stage_out(&store, claim, &request_id, ok_unmount_fn()).await;
         assert_eq!(response.state, RecordState::Unknown);
     }
 
@@ -1397,7 +1390,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/stage-out")
+                    .uri(format!("/stage-out/{}", request_id))
                     .header("Authorization", format!("Bearer {}", token))
                     .header("Content-Type", "application/json")
                     .body(Body::from(json!({"request_id": request_id}).to_string()))
