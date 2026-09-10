@@ -1,5 +1,7 @@
 # Development Guide
 
+For a log of the outstanding features see [TODO.md](TODO.md).
+
 There are CI pipelines in GitHub for testing and building the executable, plus publishing an RPM on a release.
 
 For manual testing there here are some hints:
