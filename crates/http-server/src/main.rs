@@ -50,7 +50,8 @@ async fn main() -> Result<(), anyhow::Error> {
         store,
         decoder: Arc::new(auth.decoder()),
         obtain_tokens_fn: http_server::default_obtain_tokens_fn(),
-        mount_fn: http_server::default_mount_fn(),
+        mount_user: http_server::DEFAULT_MOUNT_USER.to_string(),
+        mount_fn: http_server::default_mount_fn(http_server::DEFAULT_MOUNT_USER),
         unmount_fn: http_server::default_unmount_fn(),
     };
 

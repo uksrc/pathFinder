@@ -34,6 +34,7 @@ async fn main() -> Result<()> {
                         &args.namespace,
                         &args.file_name,
                         &base_path,
+                        &sudo_user,
                         &tokens,
                         do_exit,
                     )

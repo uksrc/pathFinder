@@ -8,7 +8,6 @@
 use anyhow::{Context, Result};
 use regex::Regex;
 use std::collections::HashSet;
-use std::env;
 use std::path::Path;
 
 use crate::api_client::{ApiClient, PathFinderApiClient};
@@ -23,6 +22,7 @@ pub fn run(
     namespace: &str,
     file_name: &str,
     base_path: &str,
+    mount_user: &str,
     tokens: &Tokens,
     exit_fn: impl Fn(i32),
 ) -> Result<()> {
@@ -34,6 +34,7 @@ pub fn run(
         namespace,
         file_name,
         base_path,
+        mount_user,
         &client,
         print_data_locations_with_sites,
         extract_rse_path,
@@ -65,11 +66,12 @@ fn run_impl(
     namespace: &str,
     file_name: &str,
     base_path: &str,
+    mount_user: &str,
     client: &dyn PathFinderApiClient,
     print_locations: impl Fn(&StorageAreaIDToNodeAndSite, &[DataLocation]),
     extract_path: impl Fn(&[DataLocation], &str, &str) -> Result<String>,
     file_exists: impl Fn(&str) -> bool,
-    mount_fn: impl Fn(&str, &str, &str) -> Result<()>,
+    mount_fn: impl Fn(&str, &str, &str, &str) -> Result<()>,
     exit_fn: impl Fn(i32),
 ) -> Result<()> {
     client.check_namespace_available(namespace)?;
@@ -93,7 +95,7 @@ fn run_impl(
         return Ok(()); // unreachable in production (used for testing when exist_fn is mocked)
     }
 
-    mount_fn(&rse_path, namespace, base_path)?;
+    mount_fn(&rse_path, namespace, mount_user, base_path)?;
 
     Ok(())
 }
@@ -210,54 +212,58 @@ pub fn extract_rse_path(
     Ok(matched_paths.into_iter().next().unwrap())
 }
 
-/// Mounts the data file at `rse_path` into the invoking user's home directory.
+/// Mounts the data file at `rse_path` into the target user's home directory.
 ///
-/// Reads `SUDO_USER` from the environment (set by `sudo`; guaranteed to be
-/// present after [`crate::cli::check_privileges`] succeeds) and delegates to
-/// [`crate::mount::mount_operation`].
+/// `mount_user` identifies the user that will own the bind mount. In the CLI
+/// context this is the value of the `SUDO_USER` environment variable; in the
+/// HTTP daemon context it is the service user account under which the server
+/// runs. The actual mount is delegated to [`crate::mount::mount_data_operation`].
 ///
 /// Prints progress messages to stdout before and after the mount syscall.
-pub fn mount_data(rse_path: &str, namespace: &str, base_path: &str) -> Result<()> {
-    let sudo_user = env::var("SUDO_USER").context("SUDO_USER not set")?;
+pub fn mount_data(
+    rse_path: &str,
+    namespace: &str,
+    mount_user: &str,
+    base_path: &str,
+) -> Result<()> {
     mount_data_impl(
         rse_path,
         namespace,
-        &sudo_user,
+        mount_user,
         base_path,
         crate::mount::mount_data_operation,
     )
 }
 
 /// Inner implementation of [`mount_data`] with an injectable `mount_fn` and
-/// `sudo_user`, so the code can be tested without performing a
-/// real OS mount.
+/// `mount_user`, so the code can be tested without performing a real OS mount.
 ///
-/// * `rse_path`  — the `/<namespace>/…` path on the RSE.
-/// * `namespace` — the data namespace (used for bind-mount target naming).
-/// * `sudo_user` — the original (non-root) user on whose behalf to mount.
-/// * `mount_fn`  — called as `mount_fn(rse_path, namespace, sudo_user)`; in
-///   production this is [`crate::mount::mount_operation`].
+/// * `rse_path`   — the `/<namespace>/…` path on the RSE.
+/// * `namespace`  — the data namespace (used for bind-mount target naming).
+/// * `mount_user` — the user that will own the bind mount.
+/// * `base_path`  — the directory under which `.binds` and `projects` are created.
+/// * `mount_fn`   — called as `mount_fn(rse_path, namespace, mount_user, base_path)`; in
+///   production this is [`crate::mount::mount_data_operation`].
 fn mount_data_impl(
     rse_path: &str,
     namespace: &str,
-    sudo_user: &str,
+    mount_user: &str,
     base_path: &str,
     mount_fn: impl Fn(&str, &str, &str, &str) -> Result<()>,
 ) -> Result<()> {
-    mount_fn(rse_path, namespace, sudo_user, base_path)
+    mount_fn(rse_path, namespace, mount_user, base_path)
 }
 
-/// Unmounts the data file at `rse_path` from the invoking user's home directory.
+/// Unmounts the data file at `rse_path` from the target user's home directory.
 ///
-/// Reads `SUDO_USER` from the environment (set by `sudo`; guaranteed to be
-/// present after [`crate::cli::check_privileges`] succeeds) and delegates to
-/// [`crate::mount::unmount_operation`].
-pub fn unmount_data(rse_path: &str, namespace: &str) -> Result<()> {
-    let sudo_user = env::var("SUDO_USER").context("SUDO_USER not set")?;
+/// `base_path` is the directory containing the `.binds` and `projects`
+/// directories created by the corresponding mount. The actual unmount is
+/// delegated to [`crate::mount::unmount_operation`].
+pub fn unmount_data(rse_path: &str, namespace: &str, base_path: &str) -> Result<()> {
     unmount_data_impl(
         rse_path,
         namespace,
-        &sudo_user,
+        base_path,
         crate::mount::unmount_operation,
     )
 }
@@ -267,17 +273,17 @@ pub fn spawned_unmount_data(base_path: &str, namespace: &str, filename: &str) ->
 }
 
 /// Inner implementation of [`unmount_data`] with an injectable `unmount_fn` and
-/// `sudo_user`, so the code can be tested without performing a real OS unmount.
+/// `base_path`, so the code can be tested without performing a real OS unmount.
 ///
-/// * `rse_path`    — the `/<namespace>/…` path on the RSE (used to derive the filename).
-/// * `namespace`   — the data namespace.
-/// * `sudo_user`   — the original (non-root) user on whose behalf to unmount.
-/// * `unmount_fn`  — called as `unmount_fn(base_path, namespace, file_name)`; in
+/// * `rse_path`   — the `/<namespace>/…` path on the RSE (used to derive the filename).
+/// * `namespace`  — the data namespace.
+/// * `base_path`  — the directory containing the `.binds` and `projects` directories.
+/// * `unmount_fn` — called as `unmount_fn(base_path, namespace, file_name)`; in
 ///   production this is [`crate::mount::unmount_operation`].
 fn unmount_data_impl(
     rse_path: &str,
     namespace: &str,
-    sudo_user: &str,
+    base_path: &str,
     unmount_fn: impl Fn(&str, &str, &str) -> Result<()>,
 ) -> Result<()> {
     let file_name = Path::new(rse_path)
@@ -285,8 +291,7 @@ fn unmount_data_impl(
         .context("Invalid RSE path: no filename")?
         .to_str()
         .context("Invalid UTF-8 in filename")?;
-    let base_path = format!("/home/{}", sudo_user);
-    unmount_fn(&base_path, namespace, file_name)
+    unmount_fn(base_path, namespace, file_name)
 }
 
 #[cfg(test)]
@@ -296,7 +301,6 @@ mod tests {
     use crate::models::DataLocationAPIResponse;
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
     // ── constants ────────────────────────────────────────────────────────────
@@ -305,20 +309,8 @@ mod tests {
     const FILE: &str = "data.fits";
     const RSE_PATH: &str = "/ska:ska-sdp/eb-m001-20240101-00000/data.fits";
     const OLYMPUSMONS_AREA_ID: &str = "12345678-90ab-cdef-1234-567890abcdef";
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     // ── helpers ──────────────────────────────────────────────────────────────
-
-    fn make_default_location() -> DataLocation {
-        DataLocation {
-            identifier: "MARSSRC-OLYMPUSMONS-T0".into(),
-            associated_storage_area_id: OLYMPUSMONS_AREA_ID.into(),
-            replicas: vec![format!(
-                "davs://xrootd01.olympusmons.marssrc.org:1094/skadata{RSE_PATH}"
-            )],
-            is_dataset: false,
-        }
-    }
 
     fn make_site_storages() -> StorageAreaIDToNodeAndSite {
         let mut m = HashMap::new();
@@ -425,13 +417,15 @@ mod tests {
         let print_count = Cell::new(0u32);
         let extract_called_with: RefCell<Option<(String, String)>> = RefCell::new(None);
         let file_exists_called_with: RefCell<Option<String>> = RefCell::new(None);
-        let mount_called_with: RefCell<Option<(String, String, String)>> = RefCell::new(None);
+        let mount_called_with: RefCell<Option<(String, String, String, String)>> =
+            RefCell::new(None);
         let exit_called = Cell::new(false);
 
         run_impl(
             NS,
             FILE,
             "/home/alice",
+            "alice",
             &client,
             |_, _| {
                 print_count.set(print_count.get() + 1);
@@ -444,9 +438,13 @@ mod tests {
                 *file_exists_called_with.borrow_mut() = Some(rse.to_string());
                 true
             },
-            |rse, ns, base| {
-                *mount_called_with.borrow_mut() =
-                    Some((rse.to_string(), ns.to_string(), base.to_string()));
+            |rse, ns, user, base| {
+                *mount_called_with.borrow_mut() = Some((
+                    rse.to_string(),
+                    ns.to_string(),
+                    user.to_string(),
+                    base.to_string(),
+                ));
                 Ok(())
             },
             |_| exit_called.set(true),
@@ -486,9 +484,10 @@ mod tests {
             Some((
                 RSE_PATH.to_string(),
                 NS.to_string(),
+                "alice".to_string(),
                 "/home/alice".to_string()
             )),
-            "mount should be called with the extracted RSE path, namespace, and base_path"
+            "mount should be called with the extracted RSE path, namespace, mount_user, and base_path"
         );
         assert!(
             !exit_called.get(),
@@ -506,11 +505,12 @@ mod tests {
             NS,
             FILE,
             "/home/alice",
+            "alice",
             &client,
             |_, _| {},
             |_, _, _| Ok(RSE_PATH.to_string()),
             |_| false, // file not present locally
-            |_, _, _| {
+            |_, _, _, _| {
                 mount_called.set(true);
                 Ok(())
             },
@@ -534,11 +534,12 @@ mod tests {
             NS,
             FILE,
             "/home/alice",
+            "alice",
             &client,
             |_, _| print_count.set(print_count.get() + 1),
             |_, _, _| Ok(RSE_PATH.to_string()),
             |_| false,
-            |_, _, _| Ok(()),
+            |_, _, _, _| Ok(()),
             |_| {},
         )
         .unwrap();
@@ -561,11 +562,12 @@ mod tests {
             NS,
             FILE,
             "/home/alice",
+            "alice",
             &client,
             |_, _| {},
             |_, _, _| unreachable!("extract_path must not be called"),
             |_| unreachable!("file_exists must not be called"),
-            |_, _, _| unreachable!("mount must not be called"),
+            |_, _, _, _| unreachable!("mount must not be called"),
             |_| unreachable!("exit_fn must not be called"),
         )
         .unwrap_err();
@@ -591,11 +593,12 @@ mod tests {
             NS,
             FILE,
             "/home/alice",
+            "alice",
             &client,
             |_, _| {},
             |_, _, _| unreachable!("extract_path must not be called"),
             |_| unreachable!("file_exists must not be called"),
-            |_, _, _| unreachable!("mount must not be called"),
+            |_, _, _, _| unreachable!("mount must not be called"),
             |_| unreachable!("exit_fn must not be called"),
         )
         .unwrap_err();
@@ -614,11 +617,12 @@ mod tests {
             NS,
             FILE,
             "/home/alice",
+            "alice",
             &client,
             |_, _| {},
             |_, _, _| anyhow::bail!("no matching replica paths"),
             |_| unreachable!("file_exists must not be called"),
-            |_, _, _| unreachable!("mount must not be called"),
+            |_, _, _, _| unreachable!("mount must not be called"),
             |_| unreachable!("exit_fn must not be called"),
         )
         .unwrap_err();
@@ -637,11 +641,12 @@ mod tests {
             NS,
             FILE,
             "/home/alice",
+            "alice",
             &client,
             |_, _| {},
             |_, _, _| Ok(RSE_PATH.to_string()),
             |_| true, // file exists
-            |_, _, _| anyhow::bail!("bindfs: permission denied"),
+            |_, _, _, _| anyhow::bail!("bindfs: permission denied"),
             |_| unreachable!("exit_fn must not be called"),
         )
         .unwrap_err();
@@ -809,10 +814,10 @@ mod tests {
         use std::cell::Cell;
 
         let called = Cell::new(false);
-        let mock_mount = |rse: &str, ns: &str, user: &str, base: &str| -> Result<()> {
+        let mock_mount = |rse: &str, ns: &str, mount_user: &str, base: &str| -> Result<()> {
             assert_eq!(rse, "/ska:ns/data.fits");
             assert_eq!(ns, "ska:ns");
-            assert_eq!(user, "alice");
+            assert_eq!(mount_user, "alice");
             assert_eq!(base, "/home/alice");
             called.set(true);
             Ok(())
@@ -845,18 +850,6 @@ mod tests {
         .unwrap_err();
         assert!(
             err.to_string().contains("bindfs failed"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn mount_data_errors_when_sudo_user_not_set() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        env::remove_var("SUDO_USER");
-
-        let err = mount_data("/ska:ns/data.fits", "ska:ns", "/home/alice").unwrap_err();
-        assert!(
-            err.to_string().contains("SUDO_USER"),
             "unexpected error: {err}"
         );
     }

@@ -73,7 +73,7 @@ impl Runner for SystemRunner {
 /// * `namespace` - The namespace/group for the data
 ///   Example: `"daac"`
 ///
-/// * `sudo_user` - The username of the user running the command (from SUDO_USER environment variable).
+/// * `mount_user` - The username of the user that will own the bind mount.
 ///   Example: `"jsmith"`
 ///
 /// # Returns
@@ -97,13 +97,13 @@ impl Runner for SystemRunner {
 pub fn mount_data_operation(
     data_path: &str,
     namespace: &str,
-    sudo_user: &str,
+    mount_user: &str,
     base_path: &str,
 ) -> Result<()> {
     mount_data_operation_impl(
         data_path,
         namespace,
-        sudo_user,
+        mount_user,
         base_path,
         Path::new("/skadata"),
         &SystemRunner,
@@ -114,7 +114,7 @@ pub fn mount_data_operation(
 fn mount_data_operation_impl(
     data_path: &str,
     namespace: &str,
-    sudo_user: &str,
+    mount_user: &str,
     base_path: &str,
     skadata_base: &Path,
     runner: &dyn Runner,
@@ -186,14 +186,14 @@ fn mount_data_operation_impl(
         })?;
 
     // Set ownership and permissions
-    let user_group = format!("{}:{}", sudo_user, sudo_user);
+    let user_group = format!("{}:{}", mount_user, mount_user);
 
     // Set ownership of .binds/<bind_name> directory.
     // We do NOT use recursive chown, as this would
     // fail if the directory happens to contain read-only bindfs content from a prior run.
     // Skip entirely when the directory is already correctly owned (e.g. a second invocation for a
     // different file that shares the same .binds/<bind_name> but has already been set up).
-    if !dir_already_owned_by(&bind_dir, sudo_user) {
+    if !dir_already_owned_by(&bind_dir, mount_user) {
         runner.run_command(
             "chown",
             &[&user_group, bind_dir.to_str().unwrap()],
@@ -217,7 +217,7 @@ fn mount_data_operation_impl(
     // fail if the directory happens to contain read-only bindfs content from a prior run.
     // Skip entirely when the directory is already correctly owned (e.g. a second invocation for a
     // different file that shares the same .binds/<bind_name> but has already been set up).
-    if !dir_already_owned_by(&projects_dir, sudo_user) {
+    if !dir_already_owned_by(&projects_dir, mount_user) {
         runner.run_command(
             "chown",
             &[&user_group, projects_dir.to_str().unwrap()],
@@ -248,8 +248,8 @@ fn mount_data_operation_impl(
         "bindfs",
         &[
             "--perms=0700",
-            &format!("--force-user={}", sudo_user),
-            &format!("--force-group={}", sudo_user),
+            &format!("--force-user={}", mount_user),
+            &format!("--force-group={}", mount_user),
             skadata_dir.to_str().unwrap(),
             bind_dir.to_str().unwrap(),
         ],

@@ -24,6 +24,10 @@ use pathfinder_shared::{
     store::{RecordState, SharedStore, StageInRecord},
 };
 
+/// Service user that owns bind mounts created by the HTTP daemon.
+/// Hard-coded for now; expected to move to configuration later.
+pub const DEFAULT_MOUNT_USER: &str = "ska_service_user";
+
 // ---------------------------------------------------------------------------
 // Request / response models (mirroring the Python FastAPI app)
 // ---------------------------------------------------------------------------
@@ -189,10 +193,11 @@ async fn validate_dids(
 
 type MountFn = Arc<dyn Fn(&str, &str, &str, &Tokens, fn(i32)) -> anyhow::Result<()> + Send + Sync>;
 
-pub fn default_mount_fn() -> MountFn {
+pub fn default_mount_fn(mount_user: &str) -> MountFn {
+    let mount_user = mount_user.to_string();
     Arc::new(
-        |namespace: &str, filename: &str, base_path: &str, tokens: &Tokens, exit_fn: fn(i32)| {
-            run(namespace, filename, base_path, tokens, exit_fn)
+        move |namespace: &str, filename: &str, base_path: &str, tokens: &Tokens, exit_fn: fn(i32)| {
+            run(namespace, filename, base_path, &mount_user, tokens, exit_fn)
         },
     )
 }
@@ -344,6 +349,7 @@ async fn process_stage_in(
     claims: &JwtClaims,
     raw_token: &str,
     request: &StageInRequest,
+    mount_user: &str,
     mount_fn: MountFn,
     obtain_tokens_fn: ObtainTokensFn,
 ) -> (StatusCode, StageInResponse) {
@@ -375,7 +381,7 @@ async fn process_stage_in(
     };
 
     process_stage_in_inner(
-        store, claims, request, request_id, dids, api_tokens, mount_fn,
+        store, claims, request, request_id, dids, api_tokens, mount_user, mount_fn,
     )
     .await
 }
@@ -387,10 +393,11 @@ async fn process_stage_in_inner(
     request_id: Uuid,
     dids: Vec<DidParse>,
     api_tokens: Tokens,
+    mount_user: &str,
     mount_fn: MountFn,
 ) -> (StatusCode, StageInResponse) {
     let user_sub = claims.sub.clone();
-    let parent_path = "/home/ska_service_user"; // TODO: Read from config file
+    let parent_path = format!("/home/{}", mount_user);
     let record = StageInRecord {
         request_id: request_id.clone(),
         state: RecordState::StagingIn,
@@ -544,6 +551,7 @@ async fn stage_in(
         &claims,
         &raw_token,
         &body,
+        &state.mount_user,
         state.mount_fn.clone(),
         state.obtain_tokens_fn.clone(),
     )
@@ -618,6 +626,9 @@ pub struct AppState {
     pub store: SharedStore,
     pub decoder: Decoder<JwtClaims>,
     pub obtain_tokens_fn: ObtainTokensFn,
+    /// User account that will own bind mounts created by this server.
+    /// Hard-coded for now; expected to move to configuration later.
+    pub mount_user: String,
     pub mount_fn: MountFn,
     pub unmount_fn: UnmountFn,
 }
@@ -759,6 +770,7 @@ mod tests {
             store,
             decoder: Arc::new(auth.decoder()),
             obtain_tokens_fn: ok_obtain_fn(),
+            mount_user: "test_user".to_string(),
             mount_fn: ok_mount_fn(),
             unmount_fn: ok_unmount_fn(),
         };
@@ -1094,6 +1106,7 @@ mod tests {
             request_id,
             dids,
             test_tokens(),
+            DEFAULT_MOUNT_USER,
             ok_mount_fn(),
         )
         .await;
@@ -1123,6 +1136,7 @@ mod tests {
             &claims,
             "token",
             &request,
+            DEFAULT_MOUNT_USER,
             ok_mount_fn(),
             ok_obtain_fn(),
         )
@@ -1147,6 +1161,7 @@ mod tests {
             &claims,
             "token",
             &request,
+            DEFAULT_MOUNT_USER,
             ok_mount_fn(),
             fail_obtain_fn(),
         )
