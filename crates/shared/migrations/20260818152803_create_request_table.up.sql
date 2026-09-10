@@ -7,7 +7,7 @@ CREATE TABLE
     work_path TEXT,
     dids_mounted TEXT,
     dids_requested TEXT,
-    status TEXT NOT NULL DEFAULT 'Started',
+    status TEXT NOT NULL DEFAULT 'Unknown',
     message TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
