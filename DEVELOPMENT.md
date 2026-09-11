@@ -1,5 +1,7 @@
 # Development Guide
 
+For a log of the outstanding features see [TODO.md](TODO.md).
+
 There are CI pipelines in GitHub for testing and building the executable, plus publishing an RPM on a release.
 
 For manual testing there here are some hints:
@@ -55,3 +57,25 @@ The `integration-test` job in `.github/workflows/ci.yml` runs `cargo test -- --i
 If a test run is interrupted before the `pf_testuser` system user is removed, subsequent runs will panic with a clear message. Remove the leftover user with:
 
       sudo userdel pf_testuser
+
+## Releasing the HTTP server
+
+A release RPM for the `pathfinder-http` daemon is built by
+`.github/workflows/release-http.yml`. The workflow runs on every push to `main`,
+on pull requests, and on tag pushes matching `v*` and GitHub releases.
+
+To publish a release:
+
+1. Update the version in `crates/http-server/Cargo.toml`.
+2. Create and push a matching git tag:
+
+   git tag v2.0.0
+   git push origin v2.0.0
+
+3. The workflow validates that the tag matches `crates/http-server/Cargo.toml`,
+   builds the `pathfinder-http` binary, creates the RPM, and attaches both to
+   the GitHub release.
+
+The RPM installs `pathfinder-http` as a `systemd` service using the files in
+`packaging/http/`. Local customisation is done through
+`/etc/default/pathfinder-http`.

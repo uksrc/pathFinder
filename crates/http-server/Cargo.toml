@@ -1,0 +1,31 @@
+[package]
+name = "pathfinder-http-server"
+version = "2.0.0"
+edition = "2021"
+
+[[bin]]
+name = "pathfinder-http"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+axum = { version = "0.8", features = ["macros"] }
+axum-jwt-auth = "0.7.0"
+futures = "0.3.34"
+itertools = "*"
+pathfinder-shared = { path = "../shared" }
+serde = { version = "1.0", features = ["derive"] }
+sqlx = "0.9.0"
+tokio = { version = "1.40", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+http = "1"
+httpmock = "0.7"
+jsonwebtoken = "10.3"
+serde_json = "1.0"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
