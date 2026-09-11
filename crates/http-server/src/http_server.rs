@@ -282,12 +282,12 @@ pub fn default_unmount_fn() -> UnmountFn {
 }
 
 async fn unmount_did(
-    store: SharedStore,
+    store: SharedStore,  // TODO: if this is not updating the status of stored record, could the calling code be responsible for the message update too?
     request_id: Uuid,
     did: DidParse,
     base_path: String,
     unmount_fn: UnmountFn,
-) {
+) -> anyhow::Result<()> {
     let did_str = format!("{}:{}", did.namespace, did.filename);
     let result =
         tokio::task::spawn_blocking(move || unmount_fn(&base_path, &did.namespace, &did.filename))
@@ -295,21 +295,24 @@ async fn unmount_did(
 
     match result {
         Err(err) => {
-            tracing::error!("unmount task panicked: {}", err);
-            let _ = store.update_status(&request_id, &RecordState::Failed).await;
-            let _ = store.add_to_message(&request_id, err.to_string()).await;
+            let message = format!("unmount task panicked: {}", err);
+            tracing::error!(message);
+            let _ = store.add_to_message(&request_id, message.clone()).await;
+            Err(anyhow::anyhow!(message))
         }
         Ok(Err(err)) => {
-            tracing::error!("spawned_unmount_data failed: {}", err);
-            let _ = store.update_status(&request_id, &RecordState::Failed).await;
-            let _ = store.add_to_message(&request_id, err.to_string()).await;
+            let message = format!("spawned_unmount_data failed: {}", err);
+            tracing::error!(message);
+            let _ = store.add_to_message(&request_id, message.clone()).await;
+            Err(anyhow::anyhow!(message))
         }
         Ok(Ok(())) => {
             if let Err(err) = store.remove_did_mounted(&request_id, &did_str).await {
                 let message = format!("failed to record unmounted DID: {}", err);
                 tracing::error!(message);
-                let _ = store.update_status(&request_id, &RecordState::Failed).await;
-                let _ = store.add_to_message(&request_id, message).await;
+                Err(anyhow::anyhow!(message))
+            } else {
+                Ok(())
             }
         }
     }
@@ -482,28 +485,72 @@ async fn process_stage_out(
                     )),
                 },
                 Some(input_path) => {
-                    // For each did in the record, unmount
+                    // Persist StagingOut state before starting async unmounts.
+                    if let Err(err) = store
+                        .update_status(&request_id, &RecordState::StagingOut)
+                        .await
+                    {
+                        return StageOutResponse {
+                            request_id: request_id,
+                            state: RecordState::Failed,
+                            message: Some(format!(
+                                "Failed to record StagingOut state: {}",
+                                err
+                            )),
+                        };
+                    }
+
+                    // For each did in the record, unmount asynchronously and
+                    // transition to StagedOut when all complete, or Failed on error.
                     tokio::spawn(async move {
+                        let mut handles = Vec::new();
                         for did_str in record.dids_mounted.into_inner() {
                             match parse_did(&did_str) {
                                 Ok(did) => {
-                                    tokio::spawn(unmount_did(
+                                    let handle = tokio::spawn(unmount_did(
                                         store.clone(),
                                         request_id.clone(),
                                         did,
                                         input_path.clone(),
                                         unmount_fn.clone(),
                                     ));
+                                    handles.push(handle);
                                 }
                                 Err(unparsed) => {
-                                    tracing::error!(
+                                    let message = format!(
                                         "cannot parse mounted DID for unmount: {}",
                                         unparsed
                                     );
+                                    tracing::error!(message);
+                                    let _ = store
+                                        .update_status(&request_id, &RecordState::Failed)
+                                        .await;
+                                    let _ = store.add_to_message(&request_id, message).await;
+                                    return;
                                 }
                             }
                         }
+
+                        let results = join_all(handles).await;
+                        let all_ok = results.iter().all(|r| matches!(r, Ok(Ok(()))));
+
+                        if all_ok {
+                            if let Err(err) = store
+                                .update_status(&request_id, &RecordState::StagedOut)
+                                .await
+                            {
+                                tracing::error!("failed to update status to StagedOut: {}", err);
+                            }
+                        } else {
+                            if let Err(err) = store
+                                .update_status(&request_id, &RecordState::Failed)
+                                .await
+                            {
+                                tracing::error!("failed to update status to Failed: {}", err);
+                            }
+                        }
                     });
+
                     StageOutResponse {
                         request_id: request_id,
                         state: RecordState::StagingOut,
@@ -1022,7 +1069,7 @@ mod tests {
             namespace: "ns".into(),
             filename: "file.fits".into(),
         };
-        unmount_did(
+        let result = unmount_did(
             store.clone(),
             request_id,
             did,
@@ -1030,6 +1077,7 @@ mod tests {
             ok_unmount_fn(),
         )
         .await;
+        assert!(result.is_ok());
 
         wait_for(|| async {
             let record = store.get(&request_id).await.unwrap().unwrap();
@@ -1040,7 +1088,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unmount_did_updates_status_to_failed_on_error() {
+    async fn unmount_did_returns_error_without_updating_status() {
         let (store, _tmp) = test_store().await;
         let request_id = Uuid::new_v4();
         store
@@ -1062,7 +1110,7 @@ mod tests {
             namespace: "ns".into(),
             filename: "file.fits".into(),
         };
-        unmount_did(
+        let result = unmount_did(
             store.clone(),
             request_id,
             did,
@@ -1071,12 +1119,14 @@ mod tests {
         )
         .await;
 
-        wait_for(|| async {
-            let record = store.get(&request_id).await.unwrap().unwrap();
-            matches!(record.status, RecordState::Failed)
-        })
-        .await
-        .unwrap();
+        assert!(result.is_err());
+
+        let record = store.get(&request_id).await.unwrap().unwrap();
+        assert_eq!(record.status, RecordState::StagedIn);
+        assert!(record
+            .dids_mounted
+            .to_vec()
+            .contains(&"ns:file.fits".to_string()));
     }
 
     // --- process_stage_in_inner ---
@@ -1232,6 +1282,59 @@ mod tests {
         wait_for(|| async {
             let record = store.get(&request_id).await.unwrap().unwrap();
             record.dids_mounted.to_vec().is_empty()
+        })
+        .await
+        .unwrap();
+
+        wait_for(|| async {
+            let record = store.get(&request_id).await.unwrap().unwrap();
+            matches!(record.status, RecordState::StagedOut)
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn process_stage_out_updates_status_to_failed_on_unmount_error() {
+        let (store, _tmp) = test_store().await;
+        let request_id = Uuid::new_v4();
+        let user_sub = "user".to_string();
+        let record = StageInRecord {
+            request_id,
+            state: RecordState::StagedIn,
+            input_path: Some("/home/user/data".into()),
+            output_path: None,
+            work_path: None,
+            dids: SqlxJson(vec!["ns:file.fits".into()]),
+            message: None,
+        };
+        store
+            .initialise_request_record(
+                &request_id,
+                &user_sub,
+                Some(record),
+                None,
+                &RecordState::StagedIn,
+            )
+            .await
+            .unwrap();
+        store
+            .update_dids_mounted(&request_id, vec!["ns:file.fits".into()])
+            .await
+            .unwrap();
+
+        let claim = JwtClaims {
+            sub: user_sub,
+            exp: None,
+        };
+        let response = process_stage_out(&store, claim, &request_id, fail_unmount_fn()).await;
+
+        assert_eq!(response.request_id, request_id);
+        assert_eq!(response.state, RecordState::StagingOut);
+
+        wait_for(|| async {
+            let record = store.get(&request_id).await.unwrap().unwrap();
+            matches!(record.status, RecordState::Failed)
         })
         .await
         .unwrap();
