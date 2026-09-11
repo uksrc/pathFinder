@@ -334,4 +334,17 @@ impl SharedStore {
         .await?;
         Ok(entries)
     }
+
+    pub async fn list_by_status(
+        &self,
+        status: &RecordState,
+    ) -> anyhow::Result<Vec<RequestStoreRow>> {
+        let entries = sqlx::query_as::<_, RequestStoreRow>(
+            "SELECT request_id, user_sub, input_path, output_path, work_path, dids_mounted, dids_requested, status, message, created_at, updated_at FROM request_store WHERE status = ? ORDER BY created_at DESC",
+        )
+        .bind(status.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(entries)
+    }
 }

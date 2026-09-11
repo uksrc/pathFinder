@@ -38,7 +38,7 @@ pub struct StageInRequest {
     project_name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StageInResponse {
     request_id: Uuid,
     state: RecordState,
@@ -191,7 +191,11 @@ type MountFn = Arc<dyn Fn(&str, &str, &str, &Tokens, fn(i32)) -> anyhow::Result<
 pub fn default_mount_fn(mount_user: &str) -> MountFn {
     let mount_user = mount_user.to_string();
     Arc::new(
-        move |namespace: &str, filename: &str, base_path: &str, tokens: &Tokens, exit_fn: fn(i32)| {
+        move |namespace: &str,
+              filename: &str,
+              base_path: &str,
+              tokens: &Tokens,
+              exit_fn: fn(i32)| {
             run(namespace, filename, base_path, &mount_user, tokens, exit_fn)
         },
     )
@@ -603,8 +607,27 @@ async fn stage_out(
         request_id
     );
 
-    let response = process_stage_out(&state.store, claims, &request_id, state.unmount_fn.clone()).await;
+    let response =
+        process_stage_out(&state.store, claims, &request_id, state.unmount_fn.clone()).await;
     Json(response)
+}
+
+/// GET /staged-in — list all requests currently in the StagedIn state.
+async fn get_staged_in_list(
+    Claims { claims, .. }: Claims<JwtClaims>,
+    State(store): State<SharedStore>,
+) -> (StatusCode, Json<Vec<StageInResponse>>) {
+    tracing::info!(user = %claims.sub, "get staged-in list");
+    match store.list_by_status(&RecordState::StagedIn).await {
+        Ok(rows) => {
+            let responses: Vec<StageInResponse> = rows.into_iter().map(Into::into).collect();
+            (StatusCode::OK, Json(responses))
+        }
+        Err(err) => {
+            tracing::error!("failed to list staged-in requests: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(vec![]))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +656,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/stage-in", post(stage_in))
         .route("/stage-in/{request_id}", get(get_stage_in_status))
+        .route("/staged-in", get(get_staged_in_list))
         .route("/stage-out/{request_id}", post(stage_out))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
@@ -754,8 +778,8 @@ mod tests {
                 .body(jwks);
         });
         let issuer = "https://test-issuer.example.com/";
-        let auth = RemoteJwksAuth::for_url(&format!("{}/jwks", server.base_url())).unwrap();  // TODO: don't unwrap
-        auth.initialize().await.unwrap();  // TODO: don't unwrap
+        let auth = RemoteJwksAuth::for_url(&format!("{}/jwks", server.base_url())).unwrap(); // TODO: don't unwrap
+        auth.initialize().await.unwrap(); // TODO: don't unwrap
         (auth, issuer.to_string())
     }
 
@@ -1399,5 +1423,101 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // --- get staged-in list ---
+
+    async fn collect_stage_in_list(response: axum::response::Response) -> Vec<StageInResponse> {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_staged_in_returns_unauthorized_without_auth_header() {
+        let (app, _tmp) = test_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/staged-in")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn get_staged_in_returns_empty_when_no_records() {
+        let (app, _tmp) = test_app().await;
+        let (_auth, issuer) = test_auth().await;
+        let token = sign_token("user", &issuer);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/staged-in")
+                    .header("Authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let list = collect_stage_in_list(response).await;
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_staged_in_returns_only_staged_in_records() {
+        let (store, _tmp) = test_store().await;
+        let staged_in_id = Uuid::new_v4();
+        let staging_id = Uuid::new_v4();
+
+        store
+            .initialise_request_record(
+                &staged_in_id,
+                &"user".to_string(),
+                None,
+                Some(vec!["ns:file.fits".into()]),
+                &RecordState::StagedIn,
+            )
+            .await
+            .unwrap();
+        store
+            .initialise_request_record(
+                &staging_id,
+                &"user".to_string(),
+                None,
+                Some(vec!["ns:other.fits".into()]),
+                &RecordState::StagingIn,
+            )
+            .await
+            .unwrap();
+
+        let app = app_with_store(store).await;
+        let (_auth, issuer) = test_auth().await;
+        let token = sign_token("user", &issuer);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/staged-in")
+                    .header("Authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let list = collect_stage_in_list(response).await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].request_id, staged_in_id);
+        assert_eq!(list[0].state, RecordState::StagedIn);
     }
 }
