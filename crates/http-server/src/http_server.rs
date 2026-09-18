@@ -282,7 +282,7 @@ pub fn default_unmount_fn() -> UnmountFn {
 }
 
 async fn unmount_did(
-    store: SharedStore,  // TODO: if this is not updating the status of stored record, could the calling code be responsible for the message update too?
+    store: SharedStore, // TODO: if this is not updating the status of stored record, could the calling code be responsible for the message update too?
     request_id: Uuid,
     did: DidParse,
     base_path: String,
@@ -493,10 +493,7 @@ async fn process_stage_out(
                         return StageOutResponse {
                             request_id: request_id,
                             state: RecordState::Failed,
-                            message: Some(format!(
-                                "Failed to record StagingOut state: {}",
-                                err
-                            )),
+                            message: Some(format!("Failed to record StagingOut state: {}", err)),
                         };
                     }
 
@@ -542,9 +539,8 @@ async fn process_stage_out(
                                 tracing::error!("failed to update status to StagedOut: {}", err);
                             }
                         } else {
-                            if let Err(err) = store
-                                .update_status(&request_id, &RecordState::Failed)
-                                .await
+                            if let Err(err) =
+                                store.update_status(&request_id, &RecordState::Failed).await
                             {
                                 tracing::error!("failed to update status to Failed: {}", err);
                             }
@@ -677,6 +673,42 @@ async fn get_staged_in_list(
     }
 }
 
+/// GET /staging-out — list all requests currently in the StagingOut state.
+async fn get_staging_out_list(
+    Claims { claims, .. }: Claims<JwtClaims>,
+    State(store): State<SharedStore>,
+) -> (StatusCode, Json<Vec<StageInResponse>>) {
+    tracing::info!(user = %claims.sub, "get staging-out list");
+    match store.list_by_status(&RecordState::StagingOut).await {
+        Ok(rows) => {
+            let responses: Vec<StageInResponse> = rows.into_iter().map(Into::into).collect();
+            (StatusCode::OK, Json(responses))
+        }
+        Err(err) => {
+            tracing::error!("failed to list staging-out requests: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(vec![]))
+        }
+    }
+}
+
+/// GET /staged-out — list all requests currently in the StagedOut state.
+async fn get_staged_out_list(
+    Claims { claims, .. }: Claims<JwtClaims>,
+    State(store): State<SharedStore>,
+) -> (StatusCode, Json<Vec<StageInResponse>>) {
+    tracing::info!(user = %claims.sub, "get staged-out list");
+    match store.list_by_status(&RecordState::StagedOut).await {
+        Ok(rows) => {
+            let responses: Vec<StageInResponse> = rows.into_iter().map(Into::into).collect();
+            (StatusCode::OK, Json(responses))
+        }
+        Err(err) => {
+            tracing::error!("failed to list staged-out requests: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(vec![]))
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Server setup
 // ---------------------------------------------------------------------------
@@ -704,6 +736,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/stage-in", post(stage_in))
         .route("/stage-in/{request_id}", get(get_stage_in_status))
         .route("/staged-in", get(get_staged_in_list))
+        .route("/staging-out", get(get_staging_out_list))
+        .route("/staged-out", get(get_staged_out_list))
         .route("/stage-out/{request_id}", post(stage_out))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
@@ -1622,5 +1656,103 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].request_id, staged_in_id);
         assert_eq!(list[0].state, RecordState::StagedIn);
+    }
+
+    #[tokio::test]
+    async fn get_staging_out_returns_only_staging_out_records() {
+        let (store, _tmp) = test_store().await;
+        let staging_out_id = Uuid::new_v4();
+        let staged_in_id = Uuid::new_v4();
+
+        store
+            .initialise_request_record(
+                &staging_out_id,
+                &"user".to_string(),
+                None,
+                Some(vec!["ns:file.fits".into()]),
+                &RecordState::StagingOut,
+            )
+            .await
+            .unwrap();
+        store
+            .initialise_request_record(
+                &staged_in_id,
+                &"user".to_string(),
+                None,
+                Some(vec!["ns:other.fits".into()]),
+                &RecordState::StagedIn,
+            )
+            .await
+            .unwrap();
+
+        let app = app_with_store(store).await;
+        let (_auth, issuer) = test_auth().await;
+        let token = sign_token("user", &issuer);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/staging-out")
+                    .header("Authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let list = collect_stage_in_list(response).await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].request_id, staging_out_id);
+        assert_eq!(list[0].state, RecordState::StagingOut);
+    }
+
+    #[tokio::test]
+    async fn get_staged_out_returns_only_staged_out_records() {
+        let (store, _tmp) = test_store().await;
+        let staged_out_id = Uuid::new_v4();
+        let staged_in_id = Uuid::new_v4();
+
+        store
+            .initialise_request_record(
+                &staged_out_id,
+                &"user".to_string(),
+                None,
+                Some(vec!["ns:file.fits".into()]),
+                &RecordState::StagedOut,
+            )
+            .await
+            .unwrap();
+        store
+            .initialise_request_record(
+                &staged_in_id,
+                &"user".to_string(),
+                None,
+                Some(vec!["ns:other.fits".into()]),
+                &RecordState::StagedIn,
+            )
+            .await
+            .unwrap();
+
+        let app = app_with_store(store).await;
+        let (_auth, issuer) = test_auth().await;
+        let token = sign_token("user", &issuer);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/staged-out")
+                    .header("Authorization", format!("Bearer {}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let list = collect_stage_in_list(response).await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].request_id, staged_out_id);
+        assert_eq!(list[0].state, RecordState::StagedOut);
     }
 }
