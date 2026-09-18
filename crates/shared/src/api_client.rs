@@ -12,7 +12,6 @@ const SC_API_BASEURL: &str = "https://site-capabilities.srcnet.skao.int/api/v1";
 /// This trait allows for abstraction and easier testing of API interactions.
 /// The `ApiClient` struct provides a concrete implementation.
 pub trait PathFinderApiClient {
-
     /// Checks if the specified namespace is available by querying the DM API.
     fn check_namespace_available(&self, namespace: &str) -> Result<()>;
 
@@ -67,14 +66,17 @@ impl ApiClient {
 /// See the trait for method documentation.
 impl PathFinderApiClient for ApiClient {
     fn check_namespace_available(&self, namespace: &str) -> Result<()> {
+        tracing::debug!("Checking namespace '{}' is available", namespace);
         let namespaces = self.get_all_namespaces()?;
         if !namespaces.contains(&namespace.to_string()) {
-            anyhow::bail!(
-                "Namespace '{}' not found in available namespaces: {:?}",
+            tracing::error!(
+                "Namespace '{}' not found - available namespaces: {:?}",
                 namespace,
                 namespaces
             );
+            anyhow::bail!("Namespace '{}' does not exist", namespace);
         }
+        tracing::debug!("Namespace {} found.", namespace);
         Ok(())
     }
 
@@ -241,7 +243,7 @@ mod tests {
         let err = client_for(&dm, &sc)
             .check_namespace_available("daac")
             .unwrap_err();
-        assert!(err.to_string().contains("not found"), "{err}");
+        assert!(err.to_string().contains("does not exist"), "{err}");
     }
 
     // --- site_storage_areas ---
