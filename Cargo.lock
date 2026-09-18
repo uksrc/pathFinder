@@ -1843,15 +1843,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1986,7 +1977,7 @@ dependencies = [
  "ascii-canvas",
  "bit-set",
  "ena",
- "itertools 0.11.0",
+ "itertools",
  "lalrpop-util",
  "petgraph",
  "pico-args",
@@ -2361,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "pathfinder-http-server"
-version = "2.0.0"
+version = "2.0.0-rc1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2369,7 +2360,7 @@ dependencies = [
  "futures",
  "http 1.5.0",
  "httpmock",
- "itertools 0.15.0",
+ "itertools",
  "jsonwebtoken 10.4.0",
  "pathfinder-shared",
  "serde",
