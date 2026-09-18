@@ -419,7 +419,7 @@ async fn process_stage_in_inner(
             &user_sub,
             Some(record.clone()),
             Some(request.dids.clone()),
-            &RecordState::StagedIn,
+            &RecordState::StagingIn,
         )
         .await
     {

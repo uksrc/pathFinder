@@ -61,7 +61,9 @@ pub fn run(
 /// * `file_exists`     — returns `true` when the file is present under `/skadata`.
 /// * `mount`           — performs the OS-level bind mount.
 /// * `exit_fn`         — called with `1` when the file is not locally staged.
-///                       In production, the CLI uses [`do_exit`].
+///                       In production, the CLI uses [`do_exit`]; the HTTP
+///                       server injects a no-op logger and relies on the
+///                       returned error to mark the request failed.
 fn run_impl(
     namespace: &str,
     file_name: &str,
@@ -92,7 +94,10 @@ fn run_impl(
         print_locations(&site_storages, &data_locations);
         println!("\nPlease ensure the data has been staged to this local site before mounting.");
         exit_fn(1);
-        return Ok(()); // unreachable in production (used for testing when exist_fn is mocked)
+        anyhow::bail!(
+            "File '{}' not found locally. Please ensure the data has been staged to this local site before mounting.",
+            rse_path
+        );
     }
 
     mount_fn(&rse_path, namespace, mount_user, base_path)?;
@@ -496,12 +501,11 @@ mod tests {
     }
 
     #[test]
-    fn run_impl_calls_exit_and_skips_mount_when_file_not_staged() {
+    fn run_impl_returns_error_and_skips_mount_when_file_not_staged() {
         let client = MockApiClient::new_golden();
-        let exit_called = Cell::new(false);
         let mount_called = Cell::new(false);
 
-        run_impl(
+        let err = run_impl(
             NS,
             FILE,
             "/home/alice",
@@ -514,11 +518,14 @@ mod tests {
                 mount_called.set(true);
                 Ok(())
             },
-            |_| exit_called.set(true),
+            |_| {},
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert!(exit_called.get(), "exit_fn should be called");
+        assert!(
+            err.to_string().contains("not found locally"),
+            "unexpected error: {err}"
+        );
         assert!(
             !mount_called.get(),
             "mount must not be called when file not staged"
@@ -530,7 +537,7 @@ mod tests {
         let client = MockApiClient::new_golden();
         let print_count = Cell::new(0u32);
 
-        run_impl(
+        let err = run_impl(
             NS,
             FILE,
             "/home/alice",
@@ -542,8 +549,12 @@ mod tests {
             |_, _, _, _| Ok(()),
             |_| {},
         )
-        .unwrap();
+        .unwrap_err();
 
+        assert!(
+            err.to_string().contains("not found locally"),
+            "unexpected error: {err}"
+        );
         assert_eq!(
             print_count.get(),
             1,
